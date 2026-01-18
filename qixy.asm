@@ -108,6 +108,7 @@ ARP_NOTE        = $3C       ; Current arpeggio note
 ARP_POS         = $3D       ; Arpeggio position (0-2)
 MUSIC_ENABLED   = $3E       ; 1 = music playing, 0 = stopped
 MUSIC_MODE      = $41       ; 0 = normal, 1 = sad (game over)
+PAUSED          = $42       ; 1 = game paused, 0 = running
 
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
@@ -125,8 +126,8 @@ SCAN_OPS_PER_FRAME = 32     ; Tiles for scan phases
 
 TRAIL_BUFFER_X  = $C000     ; Trail X coordinates (max 128 segments)
 TRAIL_BUFFER_Y  = $C080     ; Trail Y coordinates
-FILL_STACK_X    = $C100     ; Flood fill stack X (128 entries)
-FILL_STACK_Y    = $C180     ; Flood fill stack Y
+FILL_STACK_X    = $C100     ; Flood fill stack X (256 entries)
+FILL_STACK_Y    = $C200     ; Flood fill stack Y (256 entries)
 FIELD_STATE     = $C180     ; Copy of field for fill algorithm (40x25=1000 bytes)
                             ; Actually we'll just use screen RAM directly
 
@@ -285,6 +286,16 @@ MAIN_LOOP:
         jmp MAIN_LOOP
 
 @playing:
+        ; Check for pause toggle (P key)
+        jsr CHECK_PAUSE_KEY
+
+        ; If paused, check for resume input
+        lda PAUSED
+        beq @not_paused
+        jsr CHECK_RESUME
+        jmp MAIN_LOOP
+
+@not_paused:
         ; Process fill incrementally if active (small work per frame)
         lda FILL_STATE
         beq @no_fill
@@ -322,6 +333,118 @@ WAIT_FRAME:
         bne @wait1
 @wait2: cmp VIC_RASTER
         beq @wait2
+        rts
+
+; ============================================================================
+; PAUSE HANDLING
+; ============================================================================
+
+; Previous P key state for edge detection
+PREV_P_KEY      !byte 0
+
+CHECK_PAUSE_KEY:
+        ; Read keyboard row for P key
+        ; P is at row 5 (select with $DF), column 1
+        lda #$DF                ; Select keyboard row 5
+        sta CIA1_PORTA
+        lda CIA1_PORTB          ; Read columns
+        and #$02                ; Check column 1 (P key)
+        bne @p_not_pressed
+
+        ; P is pressed - check if it was already pressed (edge detection)
+        lda PREV_P_KEY
+        bne @done               ; Already pressed, ignore
+        lda #1
+        sta PREV_P_KEY
+
+        ; Toggle pause state
+        lda PAUSED
+        beq @pause_game
+
+        ; Unpause (P pressed while paused)
+        jsr UNPAUSE_GAME
+        jmp @done
+
+@pause_game:
+        jsr PAUSE_GAME
+        jmp @done
+
+@p_not_pressed:
+        lda #0
+        sta PREV_P_KEY
+
+@done:
+        ; Restore joystick reading (CIA port setting)
+        lda #$FF
+        sta CIA1_PORTA
+        rts
+
+PAUSE_GAME:
+        lda #1
+        sta PAUSED
+
+        ; Stop music
+        lda #0
+        sta MUSIC_ENABLED
+        sta SID_CTRL1
+        sta SID_CTRL2
+        sta SID_CTRL3
+
+        ; Show "PAUSED" message (center of screen, row 12)
+        ldx #0
+@show:  lda PAUSED_TXT, x
+        beq @done
+        sta SCREEN_RAM + 497, x ; Row 12, centered
+        lda #COL_YELLOW
+        sta COLOR_RAM + 497, x
+        inx
+        bne @show
+@done:  rts
+
+UNPAUSE_GAME:
+        lda #0
+        sta PAUSED
+
+        ; Restart music
+        jsr INIT_MUSIC
+
+        ; Clear "PAUSED" message
+        ldx #5
+@clear: lda #CHAR_EMPTY
+        sta SCREEN_RAM + 497, x
+        lda #COL_DGREY
+        sta COLOR_RAM + 497, x
+        dex
+        bpl @clear
+        rts
+
+CHECK_RESUME:
+        ; Check joystick for any input
+        lda CIA1_PORTA
+        and #$1F                ; Check all directions + fire
+        cmp #$1F                ; All released = $1F
+        bne @resume
+
+        ; Check keyboard for any key press (scan all rows)
+        lda #$00                ; Select all rows
+        sta CIA1_PORTA
+        lda CIA1_PORTB
+        cmp #$FF                ; No key = $FF
+        beq @done
+
+@resume:
+        ; But not if P is still held (wait for release first)
+        lda #$DF
+        sta CIA1_PORTA
+        lda CIA1_PORTB
+        and #$02
+        beq @done               ; P still held, don't resume yet
+
+        jsr UNPAUSE_GAME
+@done:
+        ; Restore joystick reading
+        lda #$FF
+        sta CIA1_PORTA
         rts
 
 ; ============================================================================
@@ -838,12 +961,9 @@ DRAW_CLAIMED_TILE:
         ldy #0
         lda #CHAR_CLAIMED
         sta (SCREEN_LO), y
-        ; Color based on position for gradient
-        lda SAVE_X
-        clc
-        adc SAVE_Y
-        and #$07
-        tax
+        ; Color based on level
+        ldx LEVEL
+        dex                     ; LEVEL is 1-based, make 0-based
         lda CLAIM_COLORS, x
         ldy #0
         sta (COLOR_LO), y
@@ -1718,7 +1838,7 @@ PUSH_IF_EMPTY:
 PUSH_FILL:
         pha
         lda FILL_STACK_PTR
-        cmp #128            ; Max stack
+        cmp #250            ; Max stack (increased from 128)
         bcs @full
 
         txa
@@ -1767,12 +1887,9 @@ UPDATE_CLAIM_UNMARKED:
         sta (SCREEN_LO), y
 
         ; Color it
-        ldx SAVE_X
-        txa
-        clc
-        adc SAVE_Y
-        and #$07
-        tax
+        ; Color based on level
+        ldx LEVEL
+        dex                     ; LEVEL is 1-based, make 0-based
         lda CLAIM_COLORS, x
         ldy #0
         sta (COLOR_LO), y
@@ -3255,13 +3372,17 @@ GAMEOVER_TXT:
         !scr "game over!"
         !byte 0
 
+PAUSED_TXT:
+        !scr "paused"
+        !byte 0
+
 CYCLE_COLORS:
         !byte COL_CYAN, COL_LBLUE, COL_PURPLE, COL_PINK
         !byte COL_RED, COL_ORANGE, COL_YELLOW, COL_LGREEN
 
 CLAIM_COLORS:
-        !byte COL_RED, COL_RED, COL_RED, COL_RED
-        !byte COL_RED, COL_RED, COL_RED, COL_RED
+        !byte COL_WHITE, COL_BLUE, COL_GREEN, COL_PURPLE
+        !byte COL_WHITE, COL_WHITE, COL_WHITE, COL_WHITE
 
 ; ============================================================================
 ; TITLE SCREEN BITMAP DATA
