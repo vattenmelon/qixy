@@ -468,7 +468,7 @@ INIT_MEMORY:
 INIT_VIC:
         lda #COL_BLACK
         sta VIC_BGCOLOR
-        lda #COL_BLUE
+        lda #COL_BLACK
         sta VIC_BORDER
 
         ; Screen at $0400, charset at $2000
@@ -757,18 +757,13 @@ SHOW_TITLE:
         ; Set border and background colors
         lda #TITLE_BG_COLOR
         sta VIC_BGCOLOR
-        lda #COL_BLUE
+        lda #COL_BLACK
         sta VIC_BORDER
         rts
 
 UPDATE_TITLE:
-        ; Animate border with cycling colors
-        lda FRAME_COUNT
-        lsr
-        lsr
-        and #$07
-        tax
-        lda CYCLE_COLORS, x
+        ; Keep border black
+        lda #COL_BLACK
         sta VIC_BORDER
 
         ; Check fire button
@@ -2641,13 +2636,8 @@ CALC_SPRITE_X:
 ; ============================================================================
 
 ANIMATE_COLORS:
-        lda FRAME_COUNT
-        lsr
-        lsr
-        lsr
-        and #$07
-        tax
-        lda BORDER_COLORS, x
+        ; Keep border black at all times
+        lda #COL_BLACK
         sta VIC_BORDER
         rts
 
@@ -2688,11 +2678,8 @@ UPDATE_LEVEL_DONE:
         rts
 
 @anim:
-        ; Rainbow border
-        lda FRAME_COUNT
-        and #$07
-        tax
-        lda CYCLE_COLORS, x
+        ; Keep border black
+        lda #COL_BLACK
         sta VIC_BORDER
         rts
 
