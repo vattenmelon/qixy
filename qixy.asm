@@ -65,6 +65,7 @@ TARGET_PERCENT  = $1B
 GAME_STATE      = $1C       ; 0=title, 1=playing, 2=dying, 3=level_complete, 4=game_over
 FRAME_COUNT     = $1D
 DEATH_TIMER     = $1E
+PREV_DRAW_DIR   = $1F       ; Previous drawing direction (for corners)
 
 ; Temporary variables
 TEMP1           = $20
@@ -204,7 +205,12 @@ FIELD_BOTTOM    = 23
 CHAR_EMPTY      = 128       ; Unclaimed area (dark)
 CHAR_CLAIMED    = 129       ; Claimed area (filled)
 CHAR_BORDER     = 130       ; Border
-CHAR_TRAIL      = 131       ; Drawing trail
+CHAR_TRAIL_H    = 131       ; Horizontal trail
+CHAR_TRAIL_V    = 132       ; Vertical trail
+CHAR_CORNER_LB  = 133       ; Corner: left + bottom (╭)
+CHAR_CORNER_RB  = 134       ; Corner: right + bottom (╮)
+CHAR_CORNER_LT  = 135       ; Corner: left + top (╰)
+CHAR_CORNER_RT  = 136       ; Corner: right + top (╯)
 
 ; Colors
 COL_BLACK       = 0
@@ -524,23 +530,81 @@ INIT_CHARSET:
         dex
         bpl @brd
 
-        ; Char 131: Trail (dashed pattern)
-        lda #%10101010
+        ; Char 131: Horizontal trail (thin band for left/right movement)
+        lda #%00000000          ; empty top
         sta CHARSET_RAM + 1048 + 0
-        lda #%01010101
         sta CHARSET_RAM + 1048 + 1
-        lda #%10101010
         sta CHARSET_RAM + 1048 + 2
-        lda #%01010101
+        lda #%11111111          ; solid center band
         sta CHARSET_RAM + 1048 + 3
-        lda #%10101010
         sta CHARSET_RAM + 1048 + 4
-        lda #%01010101
+        lda #%00000000          ; empty bottom
         sta CHARSET_RAM + 1048 + 5
-        lda #%10101010
         sta CHARSET_RAM + 1048 + 6
-        lda #%01010101
         sta CHARSET_RAM + 1048 + 7
+
+        ; Char 132: Vertical trail (thin stripe for up/down movement)
+        lda #%00011000          ; center 2 columns, all rows
+        sta CHARSET_RAM + 1056 + 0
+        sta CHARSET_RAM + 1056 + 1
+        sta CHARSET_RAM + 1056 + 2
+        sta CHARSET_RAM + 1056 + 3
+        sta CHARSET_RAM + 1056 + 4
+        sta CHARSET_RAM + 1056 + 5
+        sta CHARSET_RAM + 1056 + 6
+        sta CHARSET_RAM + 1056 + 7
+
+        ; Char 133: Corner left+bottom (╭)
+        lda #%00000000
+        sta CHARSET_RAM + 1064 + 0
+        sta CHARSET_RAM + 1064 + 1
+        sta CHARSET_RAM + 1064 + 2
+        lda #%11111000          ; left half + center
+        sta CHARSET_RAM + 1064 + 3
+        sta CHARSET_RAM + 1064 + 4
+        lda #%00011000          ; center stripe down
+        sta CHARSET_RAM + 1064 + 5
+        sta CHARSET_RAM + 1064 + 6
+        sta CHARSET_RAM + 1064 + 7
+
+        ; Char 134: Corner right+bottom (╮)
+        lda #%00000000
+        sta CHARSET_RAM + 1072 + 0
+        sta CHARSET_RAM + 1072 + 1
+        sta CHARSET_RAM + 1072 + 2
+        lda #%00011111          ; center + right half
+        sta CHARSET_RAM + 1072 + 3
+        sta CHARSET_RAM + 1072 + 4
+        lda #%00011000          ; center stripe down
+        sta CHARSET_RAM + 1072 + 5
+        sta CHARSET_RAM + 1072 + 6
+        sta CHARSET_RAM + 1072 + 7
+
+        ; Char 135: Corner left+top (╰)
+        lda #%00011000          ; center stripe up
+        sta CHARSET_RAM + 1080 + 0
+        sta CHARSET_RAM + 1080 + 1
+        sta CHARSET_RAM + 1080 + 2
+        lda #%11111000          ; left half + center
+        sta CHARSET_RAM + 1080 + 3
+        sta CHARSET_RAM + 1080 + 4
+        lda #%00000000
+        sta CHARSET_RAM + 1080 + 5
+        sta CHARSET_RAM + 1080 + 6
+        sta CHARSET_RAM + 1080 + 7
+
+        ; Char 136: Corner right+top (╯)
+        lda #%00011000          ; center stripe up
+        sta CHARSET_RAM + 1088 + 0
+        sta CHARSET_RAM + 1088 + 1
+        sta CHARSET_RAM + 1088 + 2
+        lda #%00011111          ; center + right half
+        sta CHARSET_RAM + 1088 + 3
+        sta CHARSET_RAM + 1088 + 4
+        lda #%00000000
+        sta CHARSET_RAM + 1088 + 5
+        sta CHARSET_RAM + 1088 + 6
+        sta CHARSET_RAM + 1088 + 7
 
         rts
 
@@ -941,10 +1005,74 @@ DRAW_TRAIL_TILE:
         sty SAVE_Y
         jsr CALC_SCREEN_ADDR
         ldy #0
-        lda #CHAR_TRAIL
-        sta (SCREEN_LO), y
+        ; Check if direction changed (corner needed)
+        lda PREV_DRAW_DIR
+        beq @no_corner          ; First tile, no corner
+        cmp PLAYER_DIR
+        beq @no_corner          ; Same direction, no corner
+        ; Direction changed - select correct corner
+        ; PREV_DRAW_DIR: 1=up, 2=down, 3=left, 4=right
+        ; PLAYER_DIR: 1=up, 2=down, 3=left, 4=right
+        lda PREV_DRAW_DIR
+        cmp #3
+        bcs @prev_horiz         ; prev was left(3) or right(4)
+        ; Prev was vertical (up or down)
+        lda PREV_DRAW_DIR
+        cmp #1
+        beq @prev_up
+        ; Prev was down(2) = entered from TOP, now going left or right
+        lda PLAYER_DIR
+        cmp #3
+        beq @corner_lt          ; down->left: TOP+LEFT corner
+        lda #CHAR_CORNER_RT     ; down->right: TOP+RIGHT corner
+        jmp @draw
+@prev_up:
+        ; Prev was up(1) = entered from BOTTOM, now going left or right
+        lda PLAYER_DIR
+        cmp #3
+        beq @corner_lb          ; up->left: BOTTOM+LEFT corner
+        lda #CHAR_CORNER_RB     ; up->right: BOTTOM+RIGHT corner
+        jmp @draw
+@prev_horiz:
+        ; Prev was horizontal (left or right)
+        lda PREV_DRAW_DIR
+        cmp #3
+        beq @prev_left
+        ; Prev was right(4), now must be up(1) or down(2)
+        lda PLAYER_DIR
+        cmp #1
+        beq @corner_lt          ; right->up = ╰
+        jmp @corner_lb          ; right->down = ╭
+@prev_left:
+        ; Prev was left(3), now must be up(1) or down(2)
+        lda PLAYER_DIR
+        cmp #1
+        beq @corner_rt          ; left->up = ╯
+        lda #CHAR_CORNER_RB     ; left->down = ╮
+        jmp @draw
+@corner_lb:
+        lda #CHAR_CORNER_LB
+        jmp @draw
+@corner_lt:
+        lda #CHAR_CORNER_LT
+        jmp @draw
+@corner_rt:
+        lda #CHAR_CORNER_RT
+        jmp @draw
+@no_corner:
+        ; Choose character based on movement direction
+        lda PLAYER_DIR
+        cmp #3                  ; left or right = horizontal
+        bcs @horiz
+        lda #CHAR_TRAIL_V       ; up/down = vertical stripe
+        jmp @draw
+@horiz: lda #CHAR_TRAIL_H       ; left/right = horizontal band
+@draw:  sta (SCREEN_LO), y
         lda #COL_GREY
         sta (COLOR_LO), y
+        ; Update previous direction
+        lda PLAYER_DIR
+        sta PREV_DRAW_DIR
         ldx SAVE_X
         ldy SAVE_Y
         rts
@@ -1346,7 +1474,17 @@ UPDATE_PLAYER:
         lda TEMP3
         cmp #CHAR_BORDER
         beq @can_move_edge
-        cmp #CHAR_TRAIL
+        cmp #CHAR_TRAIL_H
+        beq @can_move_edge
+        cmp #CHAR_TRAIL_V
+        beq @can_move_edge
+        cmp #CHAR_CORNER_LB
+        beq @can_move_edge
+        cmp #CHAR_CORNER_RB
+        beq @can_move_edge
+        cmp #CHAR_CORNER_LT
+        beq @can_move_edge
+        cmp #CHAR_CORNER_RT
         beq @can_move_edge
 
         ; Target is empty - can we start drawing?
@@ -1368,6 +1506,7 @@ UPDATE_PLAYER:
         sta TRAIL_START_Y
         lda #0
         sta TRAIL_COUNT
+        sta PREV_DRAW_DIR       ; Reset previous direction for corners
 
         ; Play sound
         jsr SFX_START_DRAW
@@ -1396,7 +1535,17 @@ UPDATE_PLAYER:
         beq @do_move_draw
 
         ; Check if moving into own trail (death!)
-        cmp #CHAR_TRAIL
+        cmp #CHAR_TRAIL_H
+        beq @hit_own_trail
+        cmp #CHAR_TRAIL_V
+        beq @hit_own_trail
+        cmp #CHAR_CORNER_LB
+        beq @hit_own_trail
+        cmp #CHAR_CORNER_RB
+        beq @hit_own_trail
+        cmp #CHAR_CORNER_LT
+        beq @hit_own_trail
+        cmp #CHAR_CORNER_RT
         beq @hit_own_trail
 
         ; Moving into border or claimed = complete the shape!
@@ -1518,8 +1667,19 @@ UPDATE_PLAYER:
         jsr GET_TILE
         cmp #CHAR_EMPTY
         bne @done
-        cmp #CHAR_TRAIL
+        cmp #CHAR_TRAIL_H
+        beq @in_trail
+        cmp #CHAR_TRAIL_V
+        beq @in_trail
+        cmp #CHAR_CORNER_LB
+        beq @in_trail
+        cmp #CHAR_CORNER_RB
+        beq @in_trail
+        cmp #CHAR_CORNER_LT
+        beq @in_trail
+        cmp #CHAR_CORNER_RT
         bne @done
+@in_trail:
 
         ; Released fire in danger zone! (optional - remove for easier game)
         ; jsr PLAYER_DEATH
@@ -1597,7 +1757,7 @@ UPDATE_TRAIL_CONVERT:
 
         ; Keep trail tile visible (don't convert to claimed)
         ldx FILL_INDEX
-        ; Trail remains as CHAR_TRAIL with gray color
+        ; Trail remains as trail character with gray color
 
         ; Next trail tile
         inc FILL_INDEX
@@ -2019,7 +2179,17 @@ UPDATE_CALC_PERCENTAGE:
         lda (SCREEN_LO), y
         cmp #CHAR_CLAIMED
         beq @is_claimed
-        cmp #CHAR_TRAIL         ; Also count drawn lines as claimed
+        cmp #CHAR_TRAIL_H       ; Also count drawn lines as claimed
+        beq @is_claimed
+        cmp #CHAR_TRAIL_V
+        beq @is_claimed
+        cmp #CHAR_CORNER_LB
+        beq @is_claimed
+        cmp #CHAR_CORNER_RB
+        beq @is_claimed
+        cmp #CHAR_CORNER_LT
+        beq @is_claimed
+        cmp #CHAR_CORNER_RT
         bne @not_claimed
 
 @is_claimed:
@@ -2119,8 +2289,9 @@ UPDATE_QIX:
         ; Move every other frame
         lda FRAME_COUNT
         and #$01
-        bne @done
-
+        beq +
+        jmp @done
++
         ; Calculate new position
         lda QIX_X
         clc
@@ -2152,7 +2323,17 @@ UPDATE_QIX:
         beq @move_ok
         cmp #$20            ; Marked empty is ok too
         beq @move_ok
-        cmp #CHAR_TRAIL
+        cmp #CHAR_TRAIL_H
+        beq @hit_trail
+        cmp #CHAR_TRAIL_V
+        beq @hit_trail
+        cmp #CHAR_CORNER_LB
+        beq @hit_trail
+        cmp #CHAR_CORNER_RB
+        beq @hit_trail
+        cmp #CHAR_CORNER_LT
+        beq @hit_trail
+        cmp #CHAR_CORNER_RT
         beq @hit_trail
 
         ; Hit wall or claimed - bounce
@@ -2303,7 +2484,17 @@ MOVE_SPARX:
         beq @move_ok
         cmp #CHAR_CLAIMED
         beq @move_ok
-        cmp #CHAR_TRAIL
+        cmp #CHAR_TRAIL_H
+        beq @move_ok
+        cmp #CHAR_TRAIL_V
+        beq @move_ok
+        cmp #CHAR_CORNER_LB
+        beq @move_ok
+        cmp #CHAR_CORNER_RB
+        beq @move_ok
+        cmp #CHAR_CORNER_LT
+        beq @move_ok
+        cmp #CHAR_CORNER_RT
         beq @move_ok
 
         ; Not on edge, turn clockwise
