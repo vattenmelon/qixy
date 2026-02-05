@@ -110,6 +110,7 @@ ARP_POS         = $3D       ; Arpeggio position (0-2)
 MUSIC_ENABLED   = $3E       ; 1 = music playing, 0 = stopped
 MUSIC_MODE      = $41       ; 0 = normal, 1 = sad (game over)
 PAUSED          = $42       ; 1 = game paused, 0 = running
+FILL_COLOR_IDX  = $43       ; Current fill color index (cycles through colors)
 
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
@@ -856,6 +857,7 @@ START_NEW_GAME:
         sta PLAYER_DRAWING
         sta PREV_FIRE
         sta FILL_STATE
+        sta FILL_COLOR_IDX
 
         lda #3
         sta LIVES
@@ -1084,9 +1086,8 @@ DRAW_CLAIMED_TILE:
         ldy #0
         lda #CHAR_CLAIMED
         sta (SCREEN_LO), y
-        ; Color based on level
-        ldx LEVEL
-        dex                     ; LEVEL is 1-based, make 0-based
+        ; Color based on fill index (different color per area)
+        ldx FILL_COLOR_IDX
         lda CLAIM_COLORS, x
         ldy #0
         sta (COLOR_LO), y
@@ -1788,6 +1789,12 @@ FINISH_FILL:
         lda #0
         sta FILL_STATE
 
+        ; Advance fill color for next area
+        inc FILL_COLOR_IDX
+        lda FILL_COLOR_IDX
+        and #$07            ; Wrap at 8 colors
+        sta FILL_COLOR_IDX
+
         ; Only trigger level complete if still playing
         lda GAME_STATE
         cmp #1
@@ -2041,10 +2048,8 @@ UPDATE_CLAIM_UNMARKED:
         lda #CHAR_CLAIMED
         sta (SCREEN_LO), y
 
-        ; Color it
-        ; Color based on level
-        ldx LEVEL
-        dex                     ; LEVEL is 1-based, make 0-based
+        ; Color it based on fill index (different color per area)
+        ldx FILL_COLOR_IDX
         lda CLAIM_COLORS, x
         ldy #0
         sta (COLOR_LO), y
@@ -3559,8 +3564,8 @@ CYCLE_COLORS:
         !byte COL_RED, COL_ORANGE, COL_YELLOW, COL_LGREEN
 
 CLAIM_COLORS:
-        !byte COL_WHITE, COL_BLUE, COL_GREEN, COL_PURPLE
-        !byte COL_WHITE, COL_WHITE, COL_WHITE, COL_WHITE
+        !byte COL_CYAN, COL_PURPLE, COL_GREEN, COL_YELLOW
+        !byte COL_PINK, COL_LBLUE, COL_ORANGE, COL_LGREEN
 
 ; ============================================================================
 ; TITLE SCREEN BITMAP DATA
