@@ -62,7 +62,7 @@ LIVES           = $18
 LEVEL           = $19
 PERCENT_CLAIMED = $1A
 TARGET_PERCENT  = $1B
-GAME_STATE      = $1C       ; 0=title, 1=playing, 2=dying, 3=level_complete, 4=game_over
+GAME_STATE      = $1C       ; 0=title, 1=playing, 2=dying, 3=level_complete, 4=game_over, 5=hiscore_entry, 6=hiscore_show
 FRAME_COUNT     = $1D
 DEATH_TIMER     = $1E
 PREV_DRAW_DIR   = $1F       ; Previous drawing direction (for corners)
@@ -112,6 +112,13 @@ MUSIC_MODE      = $41       ; 0 = normal, 1 = sad (game over)
 PAUSED          = $42       ; 1 = game paused, 0 = running
 FILL_COLOR_IDX  = $43       ; Current fill color index (cycles through colors)
 
+; High score entry variables
+HS_NAME_POS     = $44       ; Current cursor position in name (0-7)
+HS_ENTRY_IDX    = $45       ; Which high score slot we're entering (0-4)
+HS_BLINK_TMR    = $46       ; Cursor blink timer
+LAST_KEY        = $47       ; Last key pressed (for debounce)
+KEY_DELAY       = $48       ; Key repeat delay counter
+
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
 FILL_QIX_Y      = $40       ; Qix Y when fill started
@@ -132,6 +139,15 @@ FILL_STACK_X    = $C100     ; Flood fill stack X (256 entries)
 FILL_STACK_Y    = $C200     ; Flood fill stack Y (256 entries)
 FIELD_STATE     = $C180     ; Copy of field for fill algorithm (40x25=1000 bytes)
                             ; Actually we'll just use screen RAM directly
+
+; High score table: 5 entries x 12 bytes each = 60 bytes
+; Each entry: 8 bytes name + 3 bytes score (LO/MID/HI) + 1 byte level
+; NOTE: Must be placed AFTER FIELD_STATE which ends at $C568 ($C180 + 1000)
+HISCORE_TABLE   = $C600     ; 60 bytes for 5 high scores
+HISCORE_NAME    = $C600     ; Names start here (8 bytes each, entries 12 apart)
+HISCORE_SCORE   = $C608     ; Scores (3 bytes each, entries 12 apart)
+HISCORE_LEVEL   = $C60B     ; Levels (1 byte each, entries 12 apart)
+ENTRY_NAME      = $C63C     ; 8 bytes for current name entry buffer
 
 ; ============================================================================
 ; HARDWARE REGISTERS
@@ -185,7 +201,11 @@ SID_VOLUME      = $D418
 
 CIA1_PORTA      = $DC00
 CIA1_PORTB      = $DC01
+CIA1_DDRA       = $DC02     ; Data direction register A
+CIA1_DDRB       = $DC03     ; Data direction register B
 CIA2_PORTA      = $DD00     ; VIC bank selection
+
+VIC_MEMPTR      = $D018     ; Alias for VIC_MEMSETUP
 
 ; ============================================================================
 ; CONSTANTS
@@ -258,6 +278,7 @@ START:
         jsr INIT_CHARSET
         jsr INIT_SPRITES
         jsr INIT_SID
+        jsr INIT_HISCORE_TABLE  ; Initialize high score table
         jsr INIT_MUSIC          ; Start the Miami Vice beat!
 
         ; Start at title
@@ -286,10 +307,22 @@ MAIN_LOOP:
         beq @level_done
         cmp #4
         beq @game_over
+        cmp #5
+        beq @hs_entry
+        cmp #6
+        beq @hs_show
         jmp MAIN_LOOP
 
 @title:
         jsr UPDATE_TITLE
+        jmp MAIN_LOOP
+
+@hs_entry:
+        jsr UPDATE_HISCORE_ENTRY
+        jmp MAIN_LOOP
+
+@hs_show:
+        jsr UPDATE_HISCORE_SHOW
         jmp MAIN_LOOP
 
 @playing:
@@ -763,17 +796,14 @@ ENABLE_BITMAP_MODE:
 DISABLE_BITMAP_MODE:
         ; Switch to VIC Bank 0 ($0000-$3FFF)
         lda CIA2_PORTA
+        and #%11111100          ; Clear bank bits first
         ora #%00000011          ; Bank 0 (bits = 11)
         sta CIA2_PORTA
 
-        ; Disable bitmap mode
-        lda VIC_CTRL1
-        and #%11011111          ; Clear bitmap mode bit
+        ; Set text mode explicitly (standard C64 values)
+        lda #$1B                ; Text mode, display on, 25 rows
         sta VIC_CTRL1
-
-        ; Disable multicolor mode (for characters)
-        lda VIC_CTRL2
-        and #%11101111          ; Clear multicolor bit
+        lda #$C8                ; 40 columns, no multicolor
         sta VIC_CTRL2
 
         ; Set memory pointers for gameplay
@@ -847,6 +877,8 @@ UPDATE_TITLE:
 START_NEW_GAME:
         ; Switch back to character mode from bitmap title
         jsr DISABLE_BITMAP_MODE
+        jsr INIT_CHARSET        ; Reinitialize charset (may have been corrupted)
+        jsr INIT_SPRITES        ; Reinitialize sprites (may have been corrupted)
 
         lda #0
         sta SCORE_LO
@@ -2911,8 +2943,891 @@ UPDATE_GAME_OVER:
         and #$10
         bne @done
 
-        jsr START_NEW_GAME
+        ; Check if score qualifies for high score table
+        jsr CHECK_HISCORE
+        lda HS_ENTRY_IDX
+        cmp #$FF
+        beq @no_hiscore
+
+        ; Got a high score! Show entry screen
+        jsr SHOW_HISCORE_ENTRY
+        lda #5
+        sta GAME_STATE
+        rts
+
+@no_hiscore:
+        ; No high score, show high score table then title
+        jsr SHOW_HISCORE_TABLE
+        lda #6
+        sta GAME_STATE
 @done:  rts
+
+; ============================================================================
+; HIGH SCORE SYSTEM
+; ============================================================================
+
+; Initialize high score table with default values
+; Layout: 5 entries * 12 bytes = 60 bytes total
+; Each entry: 8 bytes name, 3 bytes score (LO/MID/HI), 1 byte level
+INIT_HISCORE_TABLE:
+        ldx #0              ; Source index for names (0-39)
+        ldy #0              ; Dest index for table (0-59)
+        lda #0
+        sta TEMP1           ; Entry counter (0-4)
+
+@entry_loop:
+        ; Copy 8 bytes of name
+        lda #8
+        sta TEMP2
+@name_loop:
+        lda DEFAULT_HS_NAMES, x
+        sta HISCORE_TABLE, y
+        inx
+        iny
+        dec TEMP2
+        bne @name_loop
+
+        ; Save X (names index) before using it for score lookup
+        stx TEMP3
+
+        ; Set descending default scores: 50, 40, 30, 20, 10
+        ldx TEMP1           ; Entry 0-4
+        lda DEFAULT_SCORES_LO, x
+        sta HISCORE_TABLE, y    ; Score LO
+        iny
+        lda #0
+        sta HISCORE_TABLE, y    ; Score MID
+        iny
+        sta HISCORE_TABLE, y    ; Score HI
+        iny
+
+        ; Level = 1
+        lda #1
+        sta HISCORE_TABLE, y
+        iny
+
+        ; Restore X (names index) for next iteration
+        ldx TEMP3
+
+        ; Next entry
+        inc TEMP1
+        lda TEMP1
+        cmp #5
+        bne @entry_loop
+        rts
+
+; Check if current score qualifies for high score table
+; Sets HS_ENTRY_IDX to position (0-4) or $FF if no entry
+CHECK_HISCORE:
+        ldx #0              ; Entry index
+        ldy #0              ; Table offset
+
+@check_loop:
+        ; Compare score (HI byte first)
+        lda SCORE_HI
+        cmp HISCORE_TABLE + 10, y   ; HI byte at offset +10
+        bcc @next_entry
+        bne @found_slot
+
+        ; HI equal, check MID
+        lda SCORE_MID
+        cmp HISCORE_TABLE + 9, y    ; MID byte at offset +9
+        bcc @next_entry
+        bne @found_slot
+
+        ; MID equal, check LO
+        lda SCORE_LO
+        cmp HISCORE_TABLE + 8, y    ; LO byte at offset +8
+        bcc @next_entry
+        beq @next_entry     ; Equal doesn't qualify
+
+@found_slot:
+        stx HS_ENTRY_IDX
+        rts
+
+@next_entry:
+        ; Move to next entry (12 bytes per entry)
+        tya
+        clc
+        adc #12
+        tay
+        inx
+        cpx #5
+        bcc @check_loop
+
+        ; No slot found
+        lda #$FF
+        sta HS_ENTRY_IDX
+        rts
+
+; Insert new high score at HS_ENTRY_IDX, shifting others down
+INSERT_HISCORE:
+        ; Shift entries down: move entry 3->4, 2->3, 1->2, 0->1 as needed
+        ; Start from entry 4 and work backwards to HS_ENTRY_IDX+1
+
+        ldx #4              ; Start with last entry slot
+@shift_loop:
+        cpx HS_ENTRY_IDX
+        beq @insert_new     ; Reached the slot, stop shifting
+        bcc @insert_new     ; Past the slot (shouldn't happen)
+
+        ; Copy entry (X-1) to entry X
+        ; Source offset = (X-1) * 12
+        ; Dest offset = X * 12
+        dex                 ; X now points to source entry
+        stx TEMP1           ; Save source entry index
+
+        ; Calculate source offset = X * 12
+        txa
+        asl                 ; *2
+        asl                 ; *4
+        sta TEMP2
+        asl                 ; *8
+        clc
+        adc TEMP2           ; *12
+        tay                 ; Y = source offset
+
+        ; Copy 12 bytes
+        ldx #12
+@copy_loop:
+        lda HISCORE_TABLE, y
+        sta HISCORE_TABLE + 12, y   ; Dest is 12 bytes later
+        iny
+        dex
+        bne @copy_loop
+
+        ; Continue with previous entry
+        ldx TEMP1           ; Restore entry index
+        jmp @shift_loop
+
+@insert_new:
+        ; Calculate offset for new entry
+        lda HS_ENTRY_IDX
+        asl
+        asl                 ; *4
+        sta TEMP1
+        asl                 ; *8
+        clc
+        adc TEMP1           ; *12
+        tay
+
+        ; Copy name from ENTRY_NAME
+        ldx #0
+@copy_name:
+        lda ENTRY_NAME, x
+        sta HISCORE_TABLE, y
+        iny
+        inx
+        cpx #8
+        bne @copy_name
+
+        ; Copy score
+        lda SCORE_LO
+        sta HISCORE_TABLE, y
+        iny
+        lda SCORE_MID
+        sta HISCORE_TABLE, y
+        iny
+        lda SCORE_HI
+        sta HISCORE_TABLE, y
+        iny
+
+        ; Copy level
+        lda LEVEL
+        sta HISCORE_TABLE, y
+        rts
+
+; Show high score entry screen
+SHOW_HISCORE_ENTRY:
+        ; Disable sprites
+        lda #0
+        sta VIC_SPRITE_EN
+
+        ; Switch to VIC bank 0 ($0000-$3FFF) for standard character ROM
+        lda CIA2_PORTA
+        ora #$03            ; Bank 0
+        sta CIA2_PORTA
+
+        ; Switch to text mode
+        lda #$1B
+        sta VIC_CTRL1
+        lda #$C8
+        sta VIC_CTRL2
+
+        ; Set up VIC for ROM charset: screen at $0400, chars at $1000 (ROM)
+        lda #$14
+        sta VIC_MEMPTR
+
+        ; Enable KERNAL ROM for keyboard input
+        lda $01
+        ora #$03            ; Enable KERNAL and BASIC ROM
+        sta $01
+
+        ; Clear screen
+        ldx #0
+@clr:   lda #$20            ; Space - must reload, gets overwritten below
+        sta SCREEN_RAM, x
+        sta SCREEN_RAM + 256, x
+        sta SCREEN_RAM + 512, x
+        sta SCREEN_RAM + 768, x
+        lda #COL_BLACK
+        sta COLOR_RAM, x
+        sta COLOR_RAM + 256, x
+        sta COLOR_RAM + 512, x
+        sta COLOR_RAM + 768, x
+        inx
+        bne @clr
+
+        ; Set colors
+        lda #COL_BLACK
+        sta VIC_BGCOLOR
+        lda #COL_BLUE
+        sta VIC_BORDER
+
+        ; Draw title "NEW HIGH SCORE!"
+        ldx #0
+@t1:    lda HS_TITLE_TXT, x
+        beq @t1done
+        sta SCREEN_RAM + 52, x
+        lda #COL_YELLOW
+        sta COLOR_RAM + 52, x
+        inx
+        bne @t1
+@t1done:
+
+        ; Draw "YOUR SCORE:" and score value
+        ldx #0
+@t2:    lda HS_SCORE_TXT, x
+        beq @t2done
+        sta SCREEN_RAM + 163, x
+        lda #COL_WHITE
+        sta COLOR_RAM + 163, x
+        inx
+        bne @t2
+@t2done:
+        jsr DRAW_ENTRY_SCORE
+
+        ; Draw "LEVEL:" and level value
+        ldx #0
+@t3:    lda HS_LEVEL_TXT, x
+        beq @t3done
+        sta SCREEN_RAM + 243, x
+        lda #COL_CYAN
+        sta COLOR_RAM + 243, x
+        inx
+        bne @t3
+@t3done:
+        jsr DRAW_ENTRY_LEVEL
+
+        ; Draw "ENTER YOUR NAME:"
+        ldx #0
+@t4:    lda HS_ENTER_TXT, x
+        beq @t4done
+        sta SCREEN_RAM + 332, x
+        lda #COL_LGREEN
+        sta COLOR_RAM + 332, x
+        inx
+        bne @t4
+@t4done:
+
+        ; Initialize name entry
+        lda #0
+        sta HS_NAME_POS
+        sta HS_BLINK_TMR
+        sta LAST_KEY
+        sta KEY_DELAY
+
+        ; Fill entry name with spaces
+        ldx #7
+        lda #$20
+@fill:  sta ENTRY_NAME, x
+        dex
+        bpl @fill
+
+        ; Draw name entry field with dots (placeholders)
+        ldx #0
+@draw_field:
+        lda #$2E            ; Period character
+        sta SCREEN_RAM + 416, x
+        lda #COL_LGREY
+        sta COLOR_RAM + 416, x
+        inx
+        cpx #8
+        bne @draw_field
+
+        ; Draw "PRESS RETURN WHEN DONE"
+        ldx #0
+@t5:    lda HS_DONE_TXT, x
+        beq @t5done
+        sta SCREEN_RAM + 612, x
+        lda #COL_LGREY
+        sta COLOR_RAM + 612, x
+        inx
+        bne @t5
+@t5done:
+        rts
+
+; Draw score on entry screen at position 175
+DRAW_ENTRY_SCORE:
+        ; Display 6-digit score at screen position 175
+        ; SCORE_HI, SCORE_MID, SCORE_LO each hold 0-99
+        ldx #0              ; Screen offset
+
+        ; High byte (2 digits)
+        lda SCORE_HI
+        jsr @draw_two_digits
+
+        ; Mid byte (2 digits)
+        lda SCORE_MID
+        jsr @draw_two_digits
+
+        ; Low byte (2 digits)
+        lda SCORE_LO
+        jsr @draw_two_digits
+        rts
+
+@draw_two_digits:
+        ; A = value 0-99, X = screen offset, increments X by 2
+        sta TEMP3
+        ; Divide by 10
+        ldy #0              ; Tens counter
+@div:   cmp #10
+        bcc @div_end
+        sec
+        sbc #10
+        iny
+        bne @div            ; Always branch
+@div_end:
+        ; Y = tens, A = ones
+        sta TEMP4           ; Save ones
+        tya
+        ora #$30            ; Convert to screen code
+        sta SCREEN_RAM + 175, x
+        lda #COL_WHITE
+        sta COLOR_RAM + 175, x
+        inx
+        lda TEMP4
+        ora #$30
+        sta SCREEN_RAM + 175, x
+        lda #COL_WHITE
+        sta COLOR_RAM + 175, x
+        inx
+        rts
+
+; Draw level on entry screen
+DRAW_ENTRY_LEVEL:
+        lda LEVEL
+        cmp #10
+        bcc @single
+        ; Two digit level
+        lda #$31            ; '1'
+        sta SCREEN_RAM + 250
+        lda #COL_CYAN
+        sta COLOR_RAM + 250
+        lda LEVEL
+        sec
+        sbc #10
+        ora #$30
+        sta SCREEN_RAM + 251
+        lda #COL_CYAN
+        sta COLOR_RAM + 251
+        rts
+@single:
+        lda LEVEL
+        ora #$30
+        sta SCREEN_RAM + 250
+        lda #COL_CYAN
+        sta COLOR_RAM + 250
+        rts
+
+; Update high score entry screen
+UPDATE_HISCORE_ENTRY:
+        ; Blink cursor
+        inc HS_BLINK_TMR
+        lda HS_BLINK_TMR
+        and #$10
+        beq @cursor_on
+        lda #$20            ; Space (cursor off)
+        jmp @draw_cursor
+@cursor_on:
+        lda #$A0            ; Reverse space (cursor on)
+@draw_cursor:
+        ldx HS_NAME_POS
+        sta SCREEN_RAM + 416, x
+        lda #COL_WHITE
+        sta COLOR_RAM + 416, x
+
+        ; Read keyboard
+        jsr READ_KEYBOARD
+        cmp #0
+        beq @no_key
+
+        ; Check for RETURN ($80 = done)
+        cmp #$80
+        beq @done_entry
+
+        ; Check for DEL ($81 = backspace)
+        cmp #$81
+        beq @backspace
+
+        ; Check if valid character (screen codes)
+        ; Letters A-Z = $01-$1A, numbers 0-9 = $30-$39, space = $20
+        cmp #$20            ; Space
+        beq @valid_char
+        cmp #$01            ; Letters A-Z ($01-$1A)
+        bcc @no_key
+        cmp #$1B
+        bcc @valid_char
+        cmp #$30            ; Numbers 0-9 ($30-$39)
+        bcc @no_key
+        cmp #$3A
+        bcs @no_key
+
+@valid_char:
+        ; Store character (already a screen code)
+        ldx HS_NAME_POS
+        cpx #8
+        bcs @no_key         ; Name full
+        sta ENTRY_NAME, x
+        sta SCREEN_RAM + 416, x
+        lda #COL_YELLOW
+        sta COLOR_RAM + 416, x
+        inc HS_NAME_POS
+        jmp @no_key
+
+@backspace:
+        lda HS_NAME_POS
+        beq @no_key
+        dec HS_NAME_POS
+        ldx HS_NAME_POS
+        lda #$2E            ; Period placeholder
+        sta SCREEN_RAM + 416, x
+        lda #COL_LGREY
+        sta COLOR_RAM + 416, x
+        lda #$20
+        sta ENTRY_NAME, x
+        jmp @no_key
+
+@done_entry:
+        ; Ensure at least one character
+        lda HS_NAME_POS
+        beq @no_key
+
+        ; Insert the high score
+        jsr INSERT_HISCORE
+
+        ; Show high score table
+        jsr SHOW_HISCORE_TABLE
+        lda #6
+        sta GAME_STATE
+        rts
+
+@no_key:
+        rts
+
+; Read keyboard - returns screen code in A, 0 if no key
+; Uses KERNAL SCNKEY to scan keyboard, then reads buffer
+READ_KEYBOARD:
+        ; Key debounce
+        lda KEY_DELAY
+        beq @can_read
+        dec KEY_DELAY
+        lda #0
+        rts
+
+@can_read:
+        ; Call KERNAL SCNKEY to scan keyboard matrix
+        jsr $FF9F           ; SCNKEY - updates keyboard buffer
+
+        ; Check if any key in buffer
+        lda $C6             ; Number of chars in keyboard buffer
+        beq @no_key
+
+        ; Get character from buffer (PETSCII)
+        lda $0277           ; First char in buffer
+        ldx #0
+        stx $C6             ; Clear buffer
+
+        ; Check if same key still held
+        cmp LAST_KEY
+        beq @no_key
+
+        ; New key - save and convert
+        sta LAST_KEY
+        lda #6              ; Debounce frames
+        sta KEY_DELAY
+
+        ; Convert PETSCII to screen code
+        lda LAST_KEY
+
+        ; Check for RETURN ($0D)
+        cmp #$0D
+        bne @not_return
+        lda #$80            ; Special code for RETURN
+        rts
+
+@not_return:
+        ; Check for DELETE ($14)
+        cmp #$14
+        bne @not_delete
+        lda #$81            ; Special code for DELETE
+        rts
+
+@not_delete:
+        ; Check for SPACE ($20)
+        cmp #$20
+        bne @not_space
+        lda #$20            ; Space screen code = $20
+        rts
+
+@not_space:
+        ; Convert letters A-Z: PETSCII $41-$5A or $C1-$DA -> screen $01-$1A
+        cmp #$41
+        bcc @check_numbers
+        cmp #$5B
+        bcs @check_lower
+        ; Uppercase A-Z ($41-$5A)
+        sec
+        sbc #$40            ; Convert to $01-$1A
+        rts
+
+@check_lower:
+        ; Lowercase a-z in PETSCII is $C1-$DA (with shift)
+        cmp #$C1
+        bcc @check_numbers
+        cmp #$DB
+        bcs @check_numbers
+        sec
+        sbc #$C0            ; Convert to $01-$1A
+        rts
+
+@check_numbers:
+        ; Numbers 0-9: PETSCII $30-$39 -> screen $30-$39 (same)
+        cmp #$30
+        bcc @invalid
+        cmp #$3A
+        bcs @invalid
+        rts                 ; Return as-is
+
+@invalid:
+@no_key:
+        lda #0
+        sta LAST_KEY
+        rts
+
+; Show high score table
+SHOW_HISCORE_TABLE:
+        ; Disable sprites
+        lda #0
+        sta VIC_SPRITE_EN
+
+        ; Switch to VIC bank 0 for standard charset
+        lda CIA2_PORTA
+        ora #$03
+        sta CIA2_PORTA
+
+        ; Switch to text mode
+        lda #$1B
+        sta VIC_CTRL1
+        lda #$C8
+        sta VIC_CTRL2
+
+        ; Use ROM charset
+        lda #$14
+        sta VIC_MEMPTR
+
+        ; Clear screen
+        ldx #0
+@clr:   lda #$20                ; Must reload - gets overwritten below
+        sta SCREEN_RAM, x
+        sta SCREEN_RAM + 256, x
+        sta SCREEN_RAM + 512, x
+        sta SCREEN_RAM + 768, x
+        lda #COL_BLACK
+        sta COLOR_RAM, x
+        sta COLOR_RAM + 256, x
+        sta COLOR_RAM + 512, x
+        sta COLOR_RAM + 768, x
+        inx
+        bne @clr
+
+        lda #COL_BLACK
+        sta VIC_BGCOLOR
+        lda #COL_PURPLE
+        sta VIC_BORDER
+
+        ; Draw "HIGH SCORES" title
+        ldx #0
+@title: lda HSTABLE_TITLE, x
+        beq @title_done
+        sta SCREEN_RAM + 54, x
+        lda #COL_YELLOW
+        sta COLOR_RAM + 54, x
+        inx
+        bne @title
+@title_done:
+
+        ; Draw header "NAME     SCORE  LVL"
+        ldx #0
+@hdr:   lda HSTABLE_HDR, x
+        beq @hdr_done
+        sta SCREEN_RAM + 131, x
+        lda #COL_LGREY
+        sta COLOR_RAM + 131, x
+        inx
+        bne @hdr
+@hdr_done:
+
+        ; Draw 5 high score entries
+        lda #0
+        sta TEMP2           ; Entry counter
+        lda #<(SCREEN_RAM + 211)
+        sta SCREEN_LO
+        lda #>(SCREEN_RAM + 211)
+        sta SCREEN_HI
+        ; Initialize color pointer (must be set BEFORE @draw_entries loop)
+        lda #<(COLOR_RAM + 211)
+        sta COLOR_LO
+        lda #>(COLOR_RAM + 211)
+        sta COLOR_HI
+
+@draw_entries:
+        ; Calculate table offset: entry * 12
+        lda TEMP2
+        asl
+        asl                 ; *4
+        sta TEMP1
+        asl                 ; *8
+        clc
+        adc TEMP1           ; *12
+        tax                 ; X = table offset
+
+        ; Draw rank number (1-5)
+        ldy #0
+        lda TEMP2
+        clc
+        adc #$31            ; '1' + entry
+        sta (SCREEN_LO), y
+        iny
+        lda #$2E            ; '.'
+        sta (SCREEN_LO), y
+        iny
+        lda #$20            ; Space
+        sta (SCREEN_LO), y
+        iny
+
+        ; Draw name (8 chars)
+        stx TEMP3           ; Save table offset
+@draw_name:
+        lda HISCORE_TABLE, x
+        cmp #$20
+        bne @not_space
+        lda #$2E            ; Show dots for empty spaces
+@not_space:
+        sta (SCREEN_LO), y
+        inx
+        iny
+        cpy #11             ; 3 + 8 chars
+        bne @draw_name
+
+        ldx TEMP3           ; Restore table offset
+
+        ; Space
+        lda #$20
+        sta (SCREEN_LO), y
+        iny
+
+        ; Draw score (6 digits from 3 bytes)
+        lda HISCORE_TABLE + 10, x    ; HI byte
+        jsr @draw_byte
+        lda HISCORE_TABLE + 9, x     ; MID byte
+        jsr @draw_byte
+        lda HISCORE_TABLE + 8, x     ; LO byte
+        jsr @draw_byte
+
+        ; Space
+        lda #$20
+        sta (SCREEN_LO), y
+        iny
+
+        ; Draw level
+        lda HISCORE_TABLE + 11, x    ; Level
+        cmp #10
+        bcc @lvl_single
+        ; Two digits
+        pha
+        lda #$31
+        sta (SCREEN_LO), y
+        iny
+        pla
+        sec
+        sbc #10
+@lvl_single:
+        ora #$30
+        sta (SCREEN_LO), y
+
+        ; Color the row
+        lda TEMP2
+        tax
+        lda HS_ROW_COLORS, x
+        tax                 ; Color in X
+
+        ldy #0
+@color_row:
+        txa
+        sta (COLOR_LO), y
+        iny
+        cpy #22
+        bne @color_row
+
+        ; Calculate color RAM address
+        lda SCREEN_LO
+        sta COLOR_LO
+        lda SCREEN_HI
+        clc
+        adc #$D4            ; COLOR_RAM = SCREEN_RAM + $D400
+        sta COLOR_HI
+
+        ; Move to next row (add 40)
+        lda SCREEN_LO
+        clc
+        adc #40
+        sta SCREEN_LO
+        lda SCREEN_HI
+        adc #0
+        sta SCREEN_HI
+
+        ; Also update color pointer
+        lda COLOR_LO
+        clc
+        adc #40
+        sta COLOR_LO
+        lda COLOR_HI
+        adc #0
+        sta COLOR_HI
+
+        inc TEMP2
+        lda TEMP2
+        cmp #5
+        bcs @entries_done
+        jmp @draw_entries
+
+@entries_done:
+        ; Draw "PRESS FIRE" prompt
+        ldx #0
+@prompt:
+        lda HSTABLE_PROMPT, x
+        beq @prompt_done
+        sta SCREEN_RAM + 532, x
+        lda #COL_WHITE
+        sta COLOR_RAM + 532, x
+        inx
+        bne @prompt
+@prompt_done:
+        rts
+
+; Helper: draw byte (0-99) as 2 decimal digits (Y = screen offset, preserves X)
+@draw_byte:
+        stx TEMP4           ; Save X
+        ; Divide A by 10: TEMP3 = quotient (tens), A = remainder (ones)
+        ldx #0
+@div:   cmp #10
+        bcc @div_end
+        sec
+        sbc #10
+        inx
+        bne @div            ; Always branch (X won't be 0 until 256 iterations)
+@div_end:
+        ; X = tens, A = ones
+        pha
+        txa
+        ora #$30
+        sta (SCREEN_LO), y
+        iny
+        pla
+        ora #$30
+        sta (SCREEN_LO), y
+        iny
+        ldx TEMP4           ; Restore X
+        rts
+
+; Update high score display - wait for fire to return to title
+UPDATE_HISCORE_SHOW:
+        ; Flash the title
+        lda FRAME_COUNT
+        and #$07
+        tax
+        lda CYCLE_COLORS, x
+        ldx #10
+@flash: sta COLOR_RAM + 54, x
+        dex
+        bpl @flash
+
+        ; Check fire button
+        lda CIA1_PORTA
+        and #$10
+        bne @done
+
+        ; Return to title
+        jsr SHOW_TITLE
+        lda #0
+        sta GAME_STATE
+@done:  rts
+
+; ============================================================================
+; HIGH SCORE DATA
+; ============================================================================
+
+; Default high score names (5 entries * 8 chars = 40 bytes)
+; NOTE: Use lowercase in source - ACME !scr converts lowercase to screen codes
+; The ROM charset displays these as uppercase on screen
+DEFAULT_HS_NAMES:
+        !scr "claude  "     ; 1st
+        !scr "reizer  "     ; 2nd
+        !scr "qixy    "     ; 3rd
+        !scr "c64     "     ; 4th
+        !scr "player  "     ; 5th
+
+; Default scores (LO byte only - MID and HI are 0)
+; Values: 50, 40, 30, 20, 10 (descending for entries 0-4)
+DEFAULT_SCORES_LO:
+        !byte 50, 40, 30, 20, 10
+
+HS_ROW_COLORS:
+        !byte COL_YELLOW, COL_WHITE, COL_CYAN, COL_LGREEN, COL_LBLUE
+
+; Text strings
+HS_TITLE_TXT:
+        !scr "new high score!"
+        !byte 0
+
+HS_SCORE_TXT:
+        !scr "your score:"
+        !byte 0
+
+HS_LEVEL_TXT:
+        !scr "level:"
+        !byte 0
+
+HS_ENTER_TXT:
+        !scr "enter your name:"
+        !byte 0
+
+HS_DONE_TXT:
+        !scr "press return when done"
+        !byte 0
+
+HSTABLE_TITLE:
+        !scr "high scores"
+        !byte 0
+
+HSTABLE_HDR:
+        !scr "   name     score  lvl"
+        !byte 0
+
+HSTABLE_PROMPT:
+        !scr "press fire to continue"
+        !byte 0
 
 ; ============================================================================
 ; SOUND EFFECTS
@@ -3510,6 +4425,9 @@ SAD_ARP_PATTERN:
 ; ============================================================================
 ; DATA
 ; ============================================================================
+; Skip over CHARSET_RAM ($2000-$27FF) and SPRITE_RAM ($2800-$2BFF)
+; to avoid overlapping with reserved VIC memory areas
+* = $2C00
 
 TITLE_TXT:
         !scr "  qixy  "
