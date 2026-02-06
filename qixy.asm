@@ -118,6 +118,7 @@ HS_ENTRY_IDX    = $45       ; Which high score slot we're entering (0-4)
 HS_BLINK_TMR    = $46       ; Cursor blink timer
 LAST_KEY        = $47       ; Last key pressed (for debounce)
 KEY_DELAY       = $48       ; Key repeat delay counter
+SAVE_ADDR       = $49       ; 2 bytes: pointer for KERNAL SAVE routine
 
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
@@ -279,6 +280,7 @@ START:
         jsr INIT_SPRITES
         jsr INIT_SID
         jsr INIT_HISCORE_TABLE  ; Initialize high score table
+        jsr LOAD_HISCORES       ; Try to load saved high scores from disk
         jsr INIT_MUSIC          ; Start the Miami Vice beat!
 
         ; Start at title
@@ -3763,6 +3765,23 @@ UPDATE_HISCORE_SHOW:
         dex
         bpl @flash
 
+        ; Check F1 key (row 0, column 4) for save
+        lda #$FE                ; Select keyboard row 0
+        sta CIA1_PORTA
+        lda CIA1_PORTB
+        and #$10                ; Check column 4 (F1 key)
+        bne @check_fire         ; Not pressed, check fire
+
+        ; F1 pressed - save high scores
+        lda #$FF                ; Restore CIA for joystick
+        sta CIA1_PORTA
+        jsr SAVE_HISCORES
+        rts
+
+@check_fire:
+        lda #$FF                ; Restore CIA for joystick
+        sta CIA1_PORTA
+
         ; Check fire button
         lda CIA1_PORTA
         and #$10
@@ -3773,6 +3792,115 @@ UPDATE_HISCORE_SHOW:
         lda #0
         sta GAME_STATE
 @done:  rts
+
+; Save high scores to disk
+SAVE_HISCORES:
+        ; Show "SAVING..." message (centered on row 14)
+        ldx #0
+@msg:   lda SAVING_TXT, x
+        beq @msg_done
+        sta SCREEN_RAM + 575, x
+        lda #COL_YELLOW
+        sta COLOR_RAM + 575, x
+        inx
+        bne @msg
+@msg_done:
+
+        ; Set filename: "QIXY-HISCORE"
+        lda #12                 ; Length of filename
+        ldx #<HS_FILENAME
+        ldy #>HS_FILENAME
+        jsr $FFBD               ; SETNAM
+
+        ; Set file params: LA=1, device=8, SA=0
+        lda #1                  ; Logical file number
+        ldx #8                  ; Device 8 (disk)
+        ldy #0                  ; Secondary address (0 = save with load address)
+        jsr $FFBA               ; SETLFS
+
+        ; Set up start address pointer in zero page
+        lda #<HISCORE_TABLE
+        sta SAVE_ADDR
+        lda #>HISCORE_TABLE
+        sta SAVE_ADDR + 1
+
+        ; Save: A = ZP pointer, X/Y = end address + 1
+        lda #SAVE_ADDR
+        ldx #<(HISCORE_TABLE + 60)
+        ldy #>(HISCORE_TABLE + 60)
+        jsr $FFD8               ; SAVE
+        bcc @save_ok
+
+        ; Error - show error message
+        ldx #0
+@err:   lda SAVE_ERR_TXT, x
+        beq @wait_release
+        sta SCREEN_RAM + 575, x
+        lda #COL_RED
+        sta COLOR_RAM + 575, x
+        inx
+        bne @err
+        jmp @wait_release
+
+@save_ok:
+        ; Show success message
+        ldx #0
+@succ:  lda SAVED_TXT, x
+        beq @wait_release
+        sta SCREEN_RAM + 575, x
+        lda #COL_LGREEN
+        sta COLOR_RAM + 575, x
+        inx
+        bne @succ
+
+@wait_release:
+        ; Wait for F1 to be released
+        lda #$FE                ; Select keyboard row 0
+        sta CIA1_PORTA
+        lda CIA1_PORTB
+        and #$10                ; Check F1
+        beq @wait_release       ; Loop while still pressed
+
+        lda #$FF                ; Restore CIA
+        sta CIA1_PORTA
+
+        ; Small delay so user sees the message
+        ldx #0
+        ldy #0
+@delay: dex
+        bne @delay
+        dey
+        bne @delay
+
+        ; Clear the message line
+        ldx #11
+        lda #$20                ; Space
+@clr:   sta SCREEN_RAM + 575, x
+        dex
+        bpl @clr
+
+        rts
+
+; Load high scores from disk (called at startup, silent on error)
+LOAD_HISCORES:
+        ; Set filename: "QIXY-HISCORE"
+        lda #12                 ; Length of filename
+        ldx #<HS_FILENAME
+        ldy #>HS_FILENAME
+        jsr $FFBD               ; SETNAM
+
+        ; Set file params: LA=1, device=8, SA=1
+        lda #1                  ; Logical file number
+        ldx #8                  ; Device 8 (disk)
+        ldy #1                  ; Secondary address (1 = load to address in file header)
+        jsr $FFBA               ; SETLFS
+
+        ; Load: A=0 means LOAD operation
+        lda #0
+        jsr $FFD5               ; LOAD
+        ; Ignore errors silently - just use defaults if file not found
+
+        rts
 
 ; ============================================================================
 ; HIGH SCORE DATA
@@ -3826,7 +3954,23 @@ HSTABLE_HDR:
         !byte 0
 
 HSTABLE_PROMPT:
-        !scr "press fire to continue"
+        !scr "fire=continue  f1=save"
+        !byte 0
+
+; Save high score text strings
+HS_FILENAME:
+        !pet "qixy-hiscore"      ; Filename in PETSCII
+
+SAVING_TXT:
+        !scr "saving...  "
+        !byte 0
+
+SAVED_TXT:
+        !scr "saved!     "
+        !byte 0
+
+SAVE_ERR_TXT:
+        !scr "save error!"
         !byte 0
 
 ; ============================================================================
