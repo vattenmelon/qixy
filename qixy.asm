@@ -120,6 +120,28 @@ LAST_KEY        = $47       ; Last key pressed (for debounce)
 KEY_DELAY       = $48       ; Key repeat delay counter
 SAVE_ADDR       = $49       ; 2 bytes: pointer for KERNAL SAVE routine
 
+; Bitmap line drawing variables
+LINE_X1         = $4B       ; Line start X (0-319) - 16-bit
+LINE_X1_HI      = $4C
+LINE_Y1         = $4D       ; Line start Y (0-199)
+LINE_X2         = $4E       ; Line end X - 16-bit
+LINE_X2_HI      = $4F
+LINE_Y2         = $50       ; Line end Y
+LINE_DX         = $51       ; Delta X (16-bit)
+LINE_DX_HI      = $52
+LINE_DY         = $53       ; Delta Y
+LINE_SX         = $54       ; Step X direction (-1 or 1)
+LINE_SY         = $55       ; Step Y direction (-1 or 1)
+LINE_ERR        = $56       ; Error term (16-bit, signed)
+LINE_ERR_HI     = $57
+LINE_CUR_X      = $58       ; Current X (16-bit)
+LINE_CUR_X_HI   = $59
+LINE_CUR_Y      = $5A       ; Current Y
+PREV_TRAIL_X    = $5B       ; Previous trail char X (for line segments)
+PREV_TRAIL_Y    = $5C       ; Previous trail char Y
+BITMAP_PTR      = $5D       ; Bitmap pointer (16-bit)
+BITMAP_PTR_HI   = $5E
+
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
 FILL_QIX_Y      = $40       ; Qix Y when fill started
@@ -719,14 +741,14 @@ INIT_SPRITES:
         lda #(SPRITE_RAM / 64) + 3
         sta SCREEN_RAM + 1019
 
-        ; Colors
-        lda #COL_CYAN
+        ; Colors - Neon synthwave palette
+        lda #COL_LGREEN         ; Player - bright green
         sta VIC_SPRITE_COL + 0
-        lda #COL_RED
+        lda #COL_RED            ; Qix - stays red (menacing)
         sta VIC_SPRITE_COL + 1
-        lda #COL_YELLOW
+        lda #COL_WHITE          ; Sparx 1 - white for visibility
         sta VIC_SPRITE_COL + 2
-        lda #COL_ORANGE
+        lda #COL_YELLOW         ; Sparx 2 - yellow
         sta VIC_SPRITE_COL + 3
 
         ; Enable sprites
@@ -877,10 +899,11 @@ UPDATE_TITLE:
 ; ============================================================================
 
 START_NEW_GAME:
-        ; Switch back to character mode from bitmap title
-        jsr DISABLE_BITMAP_MODE
-        jsr INIT_CHARSET        ; Reinitialize charset (may have been corrupted)
-        jsr INIT_SPRITES        ; Reinitialize sprites (may have been corrupted)
+        ; Switch to hires bitmap mode for gameplay
+        jsr INIT_SPRITES        ; Initialize sprites in Bank 0 first
+        jsr ENABLE_HIRES_BITMAP_MODE
+        jsr CLEAR_GAMEPLAY_BITMAP
+        jsr COPY_SPRITES_TO_BANK1
 
         lda #0
         sta SCORE_LO
@@ -892,6 +915,9 @@ START_NEW_GAME:
         sta PREV_FIRE
         sta FILL_STATE
         sta FILL_COLOR_IDX
+
+        lda #$FF
+        sta PREV_TRAIL_X        ; Initialize for line drawing
 
         lda #3
         sta LIVES
@@ -996,7 +1022,7 @@ DRAW_PLAYFIELD:
         cpy #FIELD_BOTTOM + 1
         bne @rgt
 
-        ; Fill interior with empty
+        ; Fill interior with empty (black in bitmap)
         ldy #FIELD_TOP + 1
 @row:   ldx #FIELD_LEFT + 1
 @col:   jsr DRAW_EMPTY_TILE
@@ -1013,27 +1039,33 @@ DRAW_PLAYFIELD:
 DRAW_BORDER_TILE:
         stx SAVE_X
         sty SAVE_Y
+        ; Update character map (for game logic)
         jsr CALC_SCREEN_ADDR
         ldy #0
         lda #CHAR_BORDER
         sta (SCREEN_LO), y
-        lda #COL_LBLUE
+        lda #COL_CYAN           ; Neon cyan border
         sta (COLOR_LO), y
+        ; Fill bitmap cell (for display)
         ldx SAVE_X
         ldy SAVE_Y
+        jsr FILL_BITMAP_CELL
         rts
 
 DRAW_EMPTY_TILE:
         stx SAVE_X
         sty SAVE_Y
+        ; Update character map (for game logic)
         jsr CALC_SCREEN_ADDR
         ldy #0
         lda #CHAR_EMPTY
         sta (SCREEN_LO), y
         lda #COL_DGREY
         sta (COLOR_LO), y
+        ; Clear bitmap cell (for display)
         ldx SAVE_X
         ldy SAVE_Y
+        jsr CLEAR_BITMAP_CELL
         rts
 
 DRAW_TRAIL_TILE:
@@ -1104,18 +1136,29 @@ DRAW_TRAIL_TILE:
         jmp @draw
 @horiz: lda #CHAR_TRAIL_H       ; left/right = horizontal band
 @draw:  sta (SCREEN_LO), y
-        lda #COL_GREY
+        lda #COL_PINK           ; Neon pink trail
         sta (COLOR_LO), y
+
+        ; Draw pixel-precise trail in bitmap
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr DRAW_TRAIL_BITMAP
+
+        ; Set bitmap cell color to neon pink
+        ldx SAVE_X
+        ldy SAVE_Y
+        lda #$A0                ; Pink foreground on black background (neon trail)
+        jsr SET_BITMAP_COLOR
+
         ; Update previous direction
         lda PLAYER_DIR
         sta PREV_DRAW_DIR
-        ldx SAVE_X
-        ldy SAVE_Y
         rts
 
 DRAW_CLAIMED_TILE:
         stx SAVE_X
         sty SAVE_Y
+        ; Update character map (for game logic)
         jsr CALC_SCREEN_ADDR
         ldy #0
         lda #CHAR_CLAIMED
@@ -1125,8 +1168,20 @@ DRAW_CLAIMED_TILE:
         lda CLAIM_COLORS, x
         ldy #0
         sta (COLOR_LO), y
+        ; Fill bitmap cell (for display)
         ldx SAVE_X
         ldy SAVE_Y
+        jsr FILL_BITMAP_CELL
+        ; Set bitmap color (foreground in high nibble, black background)
+        ldx FILL_COLOR_IDX
+        lda CLAIM_COLORS, x
+        asl
+        asl
+        asl
+        asl                     ; Shift color to high nibble
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr SET_BITMAP_COLOR
         rts
 
 ; Calculate screen address from X (column), Y (row)
@@ -1542,6 +1597,8 @@ UPDATE_PLAYER:
         lda #0
         sta TRAIL_COUNT
         sta PREV_DRAW_DIR       ; Reset previous direction for corners
+        lda #$FF
+        sta PREV_TRAIL_X        ; Reset previous trail position for line drawing
 
         ; Play sound
         jsr SFX_START_DRAW
@@ -2088,6 +2145,22 @@ UPDATE_CLAIM_UNMARKED:
         ldy #0
         sta (COLOR_LO), y
 
+        ; Fill bitmap cell (for display)
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr FILL_BITMAP_CELL
+
+        ; Set bitmap color (foreground in high nibble, black background)
+        ldx FILL_COLOR_IDX
+        lda CLAIM_COLORS, x
+        asl
+        asl
+        asl
+        asl                     ; Shift color to high nibble
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr SET_BITMAP_COLOR
+
         ; Add to score (BCD-style: each byte 0-99)
         inc SCORE_LO
         lda SCORE_LO
@@ -2433,7 +2506,7 @@ UPDATE_QIX:
 
 QIX_DX_TBL: !byte $FF, $01, $00, $00
 QIX_DY_TBL: !byte $00, $00, $FF, $01
-QIX_COLORS: !byte COL_RED, COL_ORANGE, COL_YELLOW, COL_PINK
+QIX_COLORS: !byte COL_RED, COL_PINK, COL_PURPLE, COL_ORANGE
             !byte COL_PURPLE, COL_LBLUE, COL_CYAN, COL_LGREEN
 
 ; ============================================================================
@@ -2719,22 +2792,30 @@ CLEAR_TRAIL:
         ldx #0
 @loop:  cpx TRAIL_COUNT
         beq @done
-        stx SAVE_X              ; Save loop counter
+        ; Save loop counter on stack
+        txa
+        pha
         ; Get X,Y from trail buffer
         lda TRAIL_BUFFER_X, x
-        sta SAVE_Y              ; Temporarily store column
+        sta SAVE_X              ; Store column
         lda TRAIL_BUFFER_Y, x
+        sta SAVE_Y              ; Store row
+        ; Clear character map
         tay                     ; Y = row
-        ldx SAVE_Y              ; X = column
+        ldx SAVE_X              ; X = column
         jsr CALC_SCREEN_ADDR
-        ; Clear the trail tile
         ldy #0
         lda #CHAR_EMPTY
         sta (SCREEN_LO), y
         lda #COL_DGREY
         sta (COLOR_LO), y
-        ; Next position
-        ldx SAVE_X
+        ; Clear bitmap cell
+        ldx SAVE_X              ; X = column
+        ldy SAVE_Y              ; Y = row
+        jsr CLEAR_BITMAP_CELL
+        ; Restore loop counter and continue
+        pla
+        tax
         inx
         bne @loop               ; Loop until X wraps (max 255 entries)
 @done:  rts
@@ -2816,21 +2897,21 @@ UPDATE_SPRITES:
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y3
 
-        ; Player color flash when drawing
+        ; Player color flash when drawing (neon effect)
         lda PLAYER_DRAWING
         beq @normal
         lda FRAME_COUNT
         and #$04
-        beq @white
-        lda #COL_CYAN
+        beq @flash
+        lda #COL_LGREEN         ; Light green
         sta VIC_SPRITE_COL
         rts
-@white:
-        lda #COL_WHITE
+@flash:
+        lda #COL_PINK           ; Pink flash (matches trail)
         sta VIC_SPRITE_COL
         rts
 @normal:
-        lda #COL_CYAN
+        lda #COL_LGREEN         ; Normal: light green
         sta VIC_SPRITE_COL
         rts
 
@@ -4571,6 +4652,7 @@ SAD_ARP_PATTERN:
 ; ============================================================================
 ; Skip over CHARSET_RAM ($2000-$27FF) and SPRITE_RAM ($2800-$2BFF)
 ; to avoid overlapping with reserved VIC memory areas
+CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
 * = $2C00
 
 TITLE_TXT:
@@ -4626,8 +4708,885 @@ CYCLE_COLORS:
         !byte COL_RED, COL_ORANGE, COL_YELLOW, COL_LGREEN
 
 CLAIM_COLORS:
-        !byte COL_CYAN, COL_PURPLE, COL_GREEN, COL_YELLOW
-        !byte COL_PINK, COL_LBLUE, COL_ORANGE, COL_LGREEN
+        ; Neon synthwave palette - vibrant colors that pop against black
+        !byte COL_CYAN, COL_PINK, COL_LGREEN, COL_YELLOW
+        !byte COL_PURPLE, COL_LBLUE, COL_ORANGE, COL_GREEN
+
+; ============================================================================
+; HIRES BITMAP ROUTINES (placed here at $2C00+ to avoid charset corruption)
+; ============================================================================
+
+; Memory constants for gameplay bitmap mode
+GAMEPLAY_BITMAP = $4000     ; 8000 bytes for hires bitmap ($4000-$5F3F)
+GAMEPLAY_SCREEN = $6000     ; Screen RAM for bitmap colors ($6000-$63E7)
+GAMEPLAY_SPRITES = $6400    ; Sprite data in Bank 1 (after screen)
+
+; Enable HIRES bitmap mode for gameplay
+; VIC Bank 1 ($4000-$7FFF), hires bitmap mode
+ENABLE_HIRES_BITMAP_MODE:
+        ; Switch to VIC Bank 1 ($4000-$7FFF)
+        lda CIA2_PORTA
+        and #%11111100
+        ora #%00000010          ; Bank 1
+        sta CIA2_PORTA
+
+        ; Enable bitmap mode
+        lda #$3B                ; Bitmap mode, display on, 25 rows
+        sta VIC_CTRL1
+
+        ; Disable multicolor for hires
+        lda #$C8                ; 40 columns, no multicolor
+        sta VIC_CTRL2
+
+        ; Screen at $6000, Bitmap at $4000
+        ; Screen offset = ($6000-$4000)/$400 = 8, bits 4-7 = 8
+        lda #$80
+        sta VIC_MEMSETUP
+
+        lda #COL_BLACK
+        sta VIC_BGCOLOR
+        lda #COL_BLUE           ; Dark blue border for synthwave aesthetic
+        sta VIC_BORDER
+        rts
+
+; Clear the gameplay bitmap and set screen colors
+CLEAR_GAMEPLAY_BITMAP:
+        ; Clear bitmap ($4000-$5F3F = 8000 bytes)
+        lda #<GAMEPLAY_BITMAP
+        sta SCREEN_LO           ; Reuse SCREEN_LO/HI as temp pointer
+        lda #>GAMEPLAY_BITMAP
+        sta SCREEN_HI
+
+        ldx #31                 ; 31 pages = 7936 bytes
+        ldy #0
+        lda #$00
+@clear_page:
+        sta (SCREEN_LO), y
+        iny
+        bne @clear_page
+        inc SCREEN_HI
+        dex
+        bne @clear_page
+
+        ; Clear remaining 64 bytes
+        ldy #0
+@clear_last:
+        sta (SCREEN_LO), y
+        iny
+        cpy #64
+        bne @clear_last
+
+        ; Set screen RAM colors ($6000, 1000 bytes)
+        lda #<GAMEPLAY_SCREEN
+        sta SCREEN_LO
+        lda #>GAMEPLAY_SCREEN
+        sta SCREEN_HI
+
+        ldx #4                  ; 4 pages
+        lda #$30                ; Cyan on black (neon border)
+        ldy #0
+@color_page:
+        sta (SCREEN_LO), y
+        iny
+        bne @color_page
+        inc SCREEN_HI
+        dex
+        bne @color_page
+
+        ; Set sprite pointers at $6000 + $3F8 = $63F8
+        ; Sprites at $6400 = block ($6400-$4000)/64 = 144
+        lda #(GAMEPLAY_SPRITES - $4000) / 64
+        sta GAMEPLAY_SCREEN + $3F8
+        lda #(GAMEPLAY_SPRITES - $4000) / 64 + 1
+        sta GAMEPLAY_SCREEN + $3F9
+        lda #(GAMEPLAY_SPRITES - $4000) / 64 + 2
+        sta GAMEPLAY_SCREEN + $3FA
+        lda #(GAMEPLAY_SPRITES - $4000) / 64 + 3
+        sta GAMEPLAY_SCREEN + $3FB
+        rts
+
+; Copy sprite data from Bank 0 ($2800) to Bank 1 ($6400)
+COPY_SPRITES_TO_BANK1:
+        ldx #0
+@copy:  lda SPRITE_RAM, x
+        sta GAMEPLAY_SPRITES, x
+        lda SPRITE_RAM + 64, x
+        sta GAMEPLAY_SPRITES + 64, x
+        lda SPRITE_RAM + 128, x
+        sta GAMEPLAY_SPRITES + 128, x
+        lda SPRITE_RAM + 192, x
+        sta GAMEPLAY_SPRITES + 192, x
+        inx
+        cpx #64
+        bne @copy
+        lda #%00001111
+        sta VIC_SPRITE_EN
+        rts
+
+; Bitmap row address lookup table (25 rows)
+; Each row = base + row * 320
+BITMAP_ROW_LO:
+        !byte <(GAMEPLAY_BITMAP + 0)
+        !byte <(GAMEPLAY_BITMAP + 320)
+        !byte <(GAMEPLAY_BITMAP + 640)
+        !byte <(GAMEPLAY_BITMAP + 960)
+        !byte <(GAMEPLAY_BITMAP + 1280)
+        !byte <(GAMEPLAY_BITMAP + 1600)
+        !byte <(GAMEPLAY_BITMAP + 1920)
+        !byte <(GAMEPLAY_BITMAP + 2240)
+        !byte <(GAMEPLAY_BITMAP + 2560)
+        !byte <(GAMEPLAY_BITMAP + 2880)
+        !byte <(GAMEPLAY_BITMAP + 3200)
+        !byte <(GAMEPLAY_BITMAP + 3520)
+        !byte <(GAMEPLAY_BITMAP + 3840)
+        !byte <(GAMEPLAY_BITMAP + 4160)
+        !byte <(GAMEPLAY_BITMAP + 4480)
+        !byte <(GAMEPLAY_BITMAP + 4800)
+        !byte <(GAMEPLAY_BITMAP + 5120)
+        !byte <(GAMEPLAY_BITMAP + 5440)
+        !byte <(GAMEPLAY_BITMAP + 5760)
+        !byte <(GAMEPLAY_BITMAP + 6080)
+        !byte <(GAMEPLAY_BITMAP + 6400)
+        !byte <(GAMEPLAY_BITMAP + 6720)
+        !byte <(GAMEPLAY_BITMAP + 7040)
+        !byte <(GAMEPLAY_BITMAP + 7360)
+        !byte <(GAMEPLAY_BITMAP + 7680)
+
+BITMAP_ROW_HI:
+        !byte >(GAMEPLAY_BITMAP + 0)
+        !byte >(GAMEPLAY_BITMAP + 320)
+        !byte >(GAMEPLAY_BITMAP + 640)
+        !byte >(GAMEPLAY_BITMAP + 960)
+        !byte >(GAMEPLAY_BITMAP + 1280)
+        !byte >(GAMEPLAY_BITMAP + 1600)
+        !byte >(GAMEPLAY_BITMAP + 1920)
+        !byte >(GAMEPLAY_BITMAP + 2240)
+        !byte >(GAMEPLAY_BITMAP + 2560)
+        !byte >(GAMEPLAY_BITMAP + 2880)
+        !byte >(GAMEPLAY_BITMAP + 3200)
+        !byte >(GAMEPLAY_BITMAP + 3520)
+        !byte >(GAMEPLAY_BITMAP + 3840)
+        !byte >(GAMEPLAY_BITMAP + 4160)
+        !byte >(GAMEPLAY_BITMAP + 4480)
+        !byte >(GAMEPLAY_BITMAP + 4800)
+        !byte >(GAMEPLAY_BITMAP + 5120)
+        !byte >(GAMEPLAY_BITMAP + 5440)
+        !byte >(GAMEPLAY_BITMAP + 5760)
+        !byte >(GAMEPLAY_BITMAP + 6080)
+        !byte >(GAMEPLAY_BITMAP + 6400)
+        !byte >(GAMEPLAY_BITMAP + 6720)
+        !byte >(GAMEPLAY_BITMAP + 7040)
+        !byte >(GAMEPLAY_BITMAP + 7360)
+        !byte >(GAMEPLAY_BITMAP + 7680)
+
+; Fill an 8x8 character cell in the bitmap (solid white)
+; Input: X = char column (0-39), Y = char row (0-24)
+; Preserves X, Y
+FILL_BITMAP_CELL:
+        stx TEMP3
+        sty TEMP4
+        ; Get row base address
+        lda BITMAP_ROW_LO, y
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, y
+        sta SCREEN_HI
+        ; Add column * 8 (handle overflow for columns >= 32)
+        txa
+        asl
+        asl
+        asl
+        bcc +               ; No overflow if carry clear
+        inc SCREEN_HI       ; Column >= 32, add 256 to address
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ; Fill 8 bytes with $FF
+        ldy #0
+        lda #$FF
+-       sta (SCREEN_LO), y
+        iny
+        cpy #8
+        bne -
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; Clear an 8x8 character cell in the bitmap (black)
+; Input: X = char column (0-39), Y = char row (0-24)
+; Preserves X, Y
+CLEAR_BITMAP_CELL:
+        stx TEMP3
+        sty TEMP4
+        ; Get row base address
+        lda BITMAP_ROW_LO, y
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, y
+        sta SCREEN_HI
+        ; Add column * 8 (handle overflow for columns >= 32)
+        txa
+        asl
+        asl
+        asl
+        bcc +               ; No overflow if carry clear
+        inc SCREEN_HI       ; Column >= 32, add 256 to address
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ; Clear 8 bytes to $00
+        ldy #0
+        lda #$00
+-       sta (SCREEN_LO), y
+        iny
+        cpy #8
+        bne -
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; Set bitmap cell color at (X=column, Y=row)
+; A = color byte (high nibble = foreground, low nibble = background)
+; Screen RAM at $6000 + row * 40 + column
+SET_BITMAP_COLOR:
+        pha                     ; Save color
+        stx TEMP3               ; Save column
+        sty TEMP4               ; Save row
+        ; Calculate screen RAM address: $6000 + Y * 40 + X
+        ; Y*40 = Y*32 + Y*8
+        tya
+        asl
+        asl
+        asl                     ; A = Y * 8
+        sta SCREEN_LO
+        lda #0
+        sta SCREEN_HI           ; Initialize high byte
+        tya
+        asl
+        asl
+        asl
+        asl
+        asl                     ; A = Y * 32 (low byte)
+        clc
+        adc SCREEN_LO           ; A = Y*32 + Y*8 = Y*40
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI           ; Handle overflow from Y*40
++       tya
+        lsr
+        lsr
+        lsr                     ; A = Y / 8 (high byte contribution from Y*32)
+        clc
+        adc SCREEN_HI           ; Add overflow from addition
+        adc #>GAMEPLAY_SCREEN   ; Add high byte of $6000
+        sta SCREEN_HI
+        ; Add column
+        txa
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ; Store color
+        pla                     ; Restore color
+        ldy #0
+        sta (SCREEN_LO), y
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; Draw pixel-precise trail in bitmap cell
+; X = char column, Y = char row
+; Uses PREV_DRAW_DIR and PLAYER_DIR to determine shape
+DRAW_TRAIL_BITMAP:
+        stx TEMP3               ; Save char X
+        sty TEMP4               ; Save char Y
+
+        ; Calculate pixel coordinates for cell center
+        ; Pixel X = char_X * 8 + 3 (center-ish)
+        ; Pixel Y = char_Y * 8 + 3
+        txa
+        asl
+        asl
+        asl                     ; A = char_X * 8
+        sta LINE_CUR_X
+        lda #0
+        sta LINE_CUR_X_HI
+        ; Handle X >= 32 (X*8 >= 256)
+        lda TEMP3
+        cmp #32
+        bcc +
+        inc LINE_CUR_X_HI
++
+        tya
+        asl
+        asl
+        asl                     ; A = char_Y * 8
+        sta LINE_CUR_Y
+
+        ; Check if corner or straight line
+        lda PREV_DRAW_DIR
+        beq @straight           ; First tile, no previous direction
+        cmp PLAYER_DIR
+        beq @straight           ; Same direction = straight line
+
+        ; It's a corner - draw L-shape
+        ; Need to draw from entry edge to center, then center to exit edge
+        jsr @draw_entry_half    ; Draw from entry edge to center
+        jsr @draw_exit_half     ; Draw from center to exit edge
+        jmp @done
+
+@straight:
+        ; Straight line - draw full line through cell
+        lda PLAYER_DIR
+        cmp #3
+        bcs @horiz_line         ; 3=left, 4=right = horizontal
+
+        ; Vertical line (up=1, down=2)
+        ; Draw 4-pixel wide vertical line (columns 2-5)
+        lda LINE_CUR_X
+        clc
+        adc #2
+        sta LINE_CUR_X
+        bcc +
+        inc LINE_CUR_X_HI
++       jsr @draw_vline_8       ; Column 2
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       jsr @draw_vline_8       ; Column 3
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       jsr @draw_vline_8       ; Column 4
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       jsr @draw_vline_8       ; Column 5
+        jmp @done
+
+@horiz_line:
+        ; Horizontal line (left=3, right=4)
+        ; Draw 4-pixel wide horizontal line (rows 2-5)
+        lda LINE_CUR_Y
+        clc
+        adc #2
+        sta LINE_CUR_Y
+        jsr @draw_hline_8       ; Row 2
+        inc LINE_CUR_Y
+        jsr @draw_hline_8       ; Row 3
+        inc LINE_CUR_Y
+        jsr @draw_hline_8       ; Row 4
+        inc LINE_CUR_Y
+        jsr @draw_hline_8       ; Row 5
+        jmp @done
+
+@draw_entry_half:
+        ; Draw from entry edge to center based on PREV_DRAW_DIR
+        lda PREV_DRAW_DIR
+        cmp #1
+        bne +
+        jmp @entry_from_bottom  ; up = entering from bottom
++       cmp #2
+        bne +
+        jmp @entry_from_top     ; down = entering from top
++       cmp #3
+        bne +
+        jmp @entry_from_right   ; left = entering from right
++       ; right(4) = entering from left
+@entry_from_left:
+        ; Draw horizontal from left edge (x+0) to center (x+5), 4 pixels wide
+        lda TEMP4
+        asl
+        asl
+        asl
+        clc
+        adc #2
+        sta LINE_CUR_Y          ; Start at row 2
+        ldx #4                  ; 4 rows
+@efl_loop:
+        lda TEMP3
+        asl
+        asl
+        asl
+        sta LINE_CUR_X
+        lda #0
+        sta LINE_CUR_X_HI
+        lda TEMP3
+        cmp #32
+        bcc +
+        inc LINE_CUR_X_HI
++       txa
+        pha
+        jsr @draw_hline_6       ; Draw 6 pixels (to center)
+        pla
+        tax
+        inc LINE_CUR_Y
+        dex
+        bne @efl_loop
+        rts
+
+@entry_from_right:
+        ; Draw horizontal from center (x+2) to right edge, 4 pixels wide
+        lda TEMP4
+        asl
+        asl
+        asl
+        clc
+        adc #2
+        sta LINE_CUR_Y          ; Start at row 2
+        ldx #4                  ; 4 rows
+@efr_loop:
+        lda TEMP3
+        asl
+        asl
+        asl
+        clc
+        adc #2                  ; Start at column 2
+        sta LINE_CUR_X
+        lda #0
+        sta LINE_CUR_X_HI
+        lda TEMP3
+        cmp #32
+        bcc +
+        inc LINE_CUR_X_HI
++       txa
+        pha
+        jsr @draw_hline_6       ; Draw 6 pixels (center to edge)
+        pla
+        tax
+        inc LINE_CUR_Y
+        dex
+        bne @efr_loop
+        rts
+
+@entry_from_top:
+        ; Draw vertical from top edge (y+0) to center, 4 pixels wide
+        lda TEMP3
+        asl
+        asl
+        asl
+        clc
+        adc #2
+        sta LINE_CUR_X          ; Start at column 2
+        lda #0
+        sta LINE_CUR_X_HI
+        lda TEMP3
+        cmp #32
+        bcc +
+        inc LINE_CUR_X_HI
++       ldx #4                  ; 4 columns
+@eft_loop:
+        lda TEMP4
+        asl
+        asl
+        asl
+        sta LINE_CUR_Y          ; Start at top edge
+        txa
+        pha
+        jsr @draw_vline_6       ; Draw 6 pixels (edge to center)
+        pla
+        tax
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       dex
+        bne @eft_loop
+        rts
+
+@entry_from_bottom:
+        ; Draw vertical from center (y+2) to bottom edge, 4 pixels wide
+        lda TEMP3
+        asl
+        asl
+        asl
+        clc
+        adc #2
+        sta LINE_CUR_X          ; Start at column 2
+        lda #0
+        sta LINE_CUR_X_HI
+        lda TEMP3
+        cmp #32
+        bcc +
+        inc LINE_CUR_X_HI
++       ldx #4                  ; 4 columns
+@efb_loop:
+        lda TEMP4
+        asl
+        asl
+        asl
+        clc
+        adc #2                  ; Start at row 2 (center)
+        sta LINE_CUR_Y
+        txa
+        pha
+        jsr @draw_vline_6       ; Draw 6 pixels (center to edge)
+        pla
+        tax
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       dex
+        bne @efb_loop
+        rts
+
+@draw_exit_half:
+        ; Draw from center to exit edge based on PLAYER_DIR
+        lda PLAYER_DIR
+        cmp #1
+        beq @exit_to_top        ; up = exiting to top
+        cmp #2
+        beq @exit_to_bottom     ; down = exiting to bottom
+        cmp #3
+        beq @exit_to_left       ; left = exiting to left
+        ; right(4) = exiting to right
+        jmp @entry_from_right   ; Same as entry from right (center to right edge)
+
+@exit_to_left:
+        jmp @entry_from_left    ; Same as entry from left (left edge to center)
+
+@exit_to_top:
+        jmp @entry_from_top     ; Same as entry from top (top edge to center)
+
+@exit_to_bottom:
+        jmp @entry_from_bottom  ; Same as entry from bottom (center to bottom)
+
+@draw_hline_8:
+        ; Draw 8 horizontal pixels starting at (LINE_CUR_X, LINE_CUR_Y)
+        ldx #8
+@hl8:   txa
+        pha                     ; Save loop counter (PLOT_PIXEL corrupts X)
+        jsr PLOT_PIXEL
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       pla
+        tax                     ; Restore loop counter
+        dex
+        bne @hl8
+        ; Restore X position
+        sec
+        lda LINE_CUR_X
+        sbc #8
+        sta LINE_CUR_X
+        bcs +
+        dec LINE_CUR_X_HI
++       rts
+
+@draw_hline_4:
+        ; Draw 4 horizontal pixels
+        ldx #4
+@hl4:   txa
+        pha                     ; Save loop counter
+        jsr PLOT_PIXEL
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       pla
+        tax                     ; Restore loop counter
+        dex
+        bne @hl4
+        rts
+
+@draw_hline_6:
+        ; Draw 6 horizontal pixels (for corners - edge to center)
+        ldx #6
+@hl6:   txa
+        pha
+        jsr PLOT_PIXEL
+        inc LINE_CUR_X
+        bne +
+        inc LINE_CUR_X_HI
++       pla
+        tax
+        dex
+        bne @hl6
+        rts
+
+@draw_vline_8:
+        ; Draw 8 vertical pixels starting at (LINE_CUR_X, LINE_CUR_Y)
+        ldx #8
+@vl8:   txa
+        pha                     ; Save loop counter
+        jsr PLOT_PIXEL
+        inc LINE_CUR_Y
+        pla
+        tax                     ; Restore loop counter
+        dex
+        bne @vl8
+        ; Restore Y position
+        sec
+        lda LINE_CUR_Y
+        sbc #8
+        sta LINE_CUR_Y
+        rts
+
+@draw_vline_4:
+        ; Draw 4 vertical pixels
+        ldx #4
+@vl4:   txa
+        pha                     ; Save loop counter
+        jsr PLOT_PIXEL
+        inc LINE_CUR_Y
+        pla
+        tax                     ; Restore loop counter
+        dex
+        bne @vl4
+        rts
+
+@draw_vline_6:
+        ; Draw 6 vertical pixels (for corners - edge to center)
+        ldx #6
+@vl6:   txa
+        pha
+        jsr PLOT_PIXEL
+        inc LINE_CUR_Y
+        pla
+        tax
+        dex
+        bne @vl6
+        rts
+
+@done:
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; Pixel bitmasks (bit 7 = leftmost pixel in byte)
+PIXEL_MASKS:
+        !byte %10000000, %01000000, %00100000, %00010000
+        !byte %00001000, %00000100, %00000010, %00000001
+
+; Plot a pixel at (LINE_CUR_X, LINE_CUR_Y)
+; Uses BITMAP_PTR as temp pointer
+PLOT_PIXEL:
+        ; Calculate bitmap address
+        ; Address = $4000 + (Y/8)*320 + (Y AND 7) + (X/8)*8
+
+        ; Get char row (Y / 8)
+        lda LINE_CUR_Y
+        lsr
+        lsr
+        lsr                     ; A = char_row (0-24)
+        tay
+
+        ; Get row base address
+        lda BITMAP_ROW_LO, y
+        sta BITMAP_PTR
+        lda BITMAP_ROW_HI, y
+        sta BITMAP_PTR_HI
+
+        ; Add (Y AND 7) - pixel row within char
+        lda LINE_CUR_Y
+        and #$07
+        clc
+        adc BITMAP_PTR
+        sta BITMAP_PTR
+        bcc +
+        inc BITMAP_PTR_HI
++
+        ; Add (X / 8) * 8 = X AND $F8
+        ; But X is 16-bit, so handle high byte
+        lda LINE_CUR_X
+        and #$F8
+        clc
+        adc BITMAP_PTR
+        sta BITMAP_PTR
+        lda LINE_CUR_X_HI
+        adc BITMAP_PTR_HI
+        sta BITMAP_PTR_HI
+
+        ; Get pixel mask (X AND 7)
+        lda LINE_CUR_X
+        and #$07
+        tax
+        lda PIXEL_MASKS, x
+
+        ; Set the pixel
+        ldy #0
+        ora (BITMAP_PTR), y
+        sta (BITMAP_PTR), y
+        rts
+
+; Draw line from (LINE_X1, LINE_Y1) to (LINE_X2, LINE_Y2)
+; Bresenham's line algorithm
+DRAW_LINE:
+        ; Initialize current position
+        lda LINE_X1
+        sta LINE_CUR_X
+        lda LINE_X1_HI
+        sta LINE_CUR_X_HI
+        lda LINE_Y1
+        sta LINE_CUR_Y
+
+        ; Calculate dx = abs(x2 - x1)
+        sec
+        lda LINE_X2
+        sbc LINE_X1
+        sta LINE_DX
+        lda LINE_X2_HI
+        sbc LINE_X1_HI
+        sta LINE_DX_HI
+
+        ; If dx negative, negate it and set sx = -1
+        bpl @dx_pos
+        ; Negate dx
+        lda #0
+        sec
+        sbc LINE_DX
+        sta LINE_DX
+        lda #0
+        sbc LINE_DX_HI
+        sta LINE_DX_HI
+        lda #$FF                ; sx = -1
+        sta LINE_SX
+        bne @dx_done
+@dx_pos:
+        lda #$01                ; sx = 1
+        sta LINE_SX
+@dx_done:
+
+        ; Calculate dy = -abs(y2 - y1)
+        sec
+        lda LINE_Y2
+        sbc LINE_Y1
+        sta LINE_DY
+        bpl @dy_pos
+        ; dy is negative, negate to get abs
+        lda #0
+        sec
+        sbc LINE_DY
+        sta LINE_DY
+        lda #$FF                ; sy = -1
+        sta LINE_SY
+        jmp @dy_done
+@dy_pos:
+        lda #$01                ; sy = 1
+        sta LINE_SY
+@dy_done:
+        ; Now negate dy (Bresenham uses -abs(dy))
+        lda #0
+        sec
+        sbc LINE_DY
+        sta LINE_DY
+
+        ; err = dx + dy (dy is already negative)
+        clc
+        lda LINE_DX
+        adc LINE_DY
+        sta LINE_ERR
+        lda LINE_DX_HI
+        adc #$FF                ; Sign extend dy (which is negative)
+        sta LINE_ERR_HI
+
+        ; If LINE_DY was 0, high byte should be from dx only
+        lda LINE_DY
+        bne @err_ok
+        lda LINE_DX_HI
+        sta LINE_ERR_HI
+@err_ok:
+
+@loop:
+        ; Plot current pixel
+        jsr PLOT_PIXEL
+
+        ; Check if we've reached the end
+        lda LINE_CUR_X
+        cmp LINE_X2
+        bne @not_done
+        lda LINE_CUR_X_HI
+        cmp LINE_X2_HI
+        bne @not_done
+        lda LINE_CUR_Y
+        cmp LINE_Y2
+        bne @not_done
+        rts                     ; Done!
+
+@not_done:
+        ; e2 = 2 * err (store in TEMP1/TEMP2)
+        lda LINE_ERR
+        asl
+        sta TEMP1
+        lda LINE_ERR_HI
+        rol
+        sta TEMP2
+
+        ; if e2 >= dy (remember dy is negative, so this is e2 > dy)
+        ; Compare TEMP1/2 with LINE_DY (sign-extended)
+        ; Since dy is negative 8-bit stored in LINE_DY, sign extend to compare
+        lda TEMP2
+        bmi @check_dy           ; e2 is negative
+        ; e2 is positive or zero, dy is negative, so e2 >= dy
+        jmp @do_dy_branch
+@check_dy:
+        ; Both negative, compare magnitudes
+        lda LINE_DY
+        beq @do_dy_branch       ; dy=0, always branch
+        ; LINE_DY is -abs(dy), TEMP1/2 is 2*err
+        ; We want: 2*err >= dy (where dy is negative)
+        ; i.e., 2*err >= -abs(original_dy)
+        sec
+        lda TEMP1
+        sbc LINE_DY
+        lda TEMP2
+        sbc #$FF                ; Sign extend LINE_DY
+        bpl @do_dy_branch       ; If result >= 0, take branch
+        jmp @skip_dy
+
+@do_dy_branch:
+        ; err += dy
+        clc
+        lda LINE_ERR
+        adc LINE_DY
+        sta LINE_ERR
+        lda LINE_ERR_HI
+        adc #$FF                ; Sign extend dy
+        sta LINE_ERR_HI
+
+        ; x += sx
+        lda LINE_SX
+        bmi @dec_x
+        ; Increment x
+        inc LINE_CUR_X
+        bne @skip_dy
+        inc LINE_CUR_X_HI
+        jmp @skip_dy
+@dec_x:
+        ; Decrement x
+        lda LINE_CUR_X
+        bne +
+        dec LINE_CUR_X_HI
++       dec LINE_CUR_X
+
+@skip_dy:
+        ; if e2 <= dx
+        ; TEMP1/2 still has 2*err
+        sec
+        lda LINE_DX
+        sbc TEMP1
+        lda LINE_DX_HI
+        sbc TEMP2
+        bmi @loop               ; dx < e2, skip
+
+        ; err += dx
+        clc
+        lda LINE_ERR
+        adc LINE_DX
+        sta LINE_ERR
+        lda LINE_ERR_HI
+        adc LINE_DX_HI
+        sta LINE_ERR_HI
+
+        ; y += sy
+        lda LINE_SY
+        bmi @dec_y
+        inc LINE_CUR_Y
+        jmp @loop
+@dec_y:
+        dec LINE_CUR_Y
+        jmp @loop
 
 ; ============================================================================
 ; TITLE SCREEN BITMAP DATA
