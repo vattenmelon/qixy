@@ -3793,9 +3793,9 @@ SHOW_HISCORE_TABLE:
         ldx #0
 @hdr:   lda HSTABLE_HDR, x
         beq @hdr_done
-        sta SCREEN_RAM + 131, x
+        sta SCREEN_RAM + 129, x
         lda #COL_LGREY
-        sta COLOR_RAM + 131, x
+        sta COLOR_RAM + 129, x
         inx
         bne @hdr
 @hdr_done:
@@ -3803,14 +3803,14 @@ SHOW_HISCORE_TABLE:
         ; Draw 5 high score entries
         lda #0
         sta TEMP2           ; Entry counter
-        lda #<(SCREEN_RAM + 211)
+        lda #<(SCREEN_RAM + 209)
         sta SCREEN_LO
-        lda #>(SCREEN_RAM + 211)
+        lda #>(SCREEN_RAM + 209)
         sta SCREEN_HI
         ; Initialize color pointer (must be set BEFORE @draw_entries loop)
-        lda #<(COLOR_RAM + 211)
+        lda #<(COLOR_RAM + 209)
         sta COLOR_LO
-        lda #>(COLOR_RAM + 211)
+        lda #>(COLOR_RAM + 209)
         sta COLOR_HI
 
 @draw_entries:
@@ -3940,12 +3940,51 @@ SHOW_HISCORE_TABLE:
 @prompt:
         lda HSTABLE_PROMPT, x
         beq @prompt_done
-        sta SCREEN_RAM + 532, x
+        sta SCREEN_RAM + 529, x
         lda #COL_WHITE
-        sta COLOR_RAM + 532, x
+        sta COLOR_RAM + 529, x
         inx
         bne @prompt
 @prompt_done:
+
+        ; Convert all screen letters to uppercase codes for lowercase charset
+        ; Screen codes $01-$1A (letters) get $40 added → $41-$5A (uppercase in lowercase charset)
+        lda #<SCREEN_RAM
+        sta SCREEN_LO
+        lda #>SCREEN_RAM
+        sta SCREEN_HI
+        ldx #4              ; 4 pages
+        ldy #0
+@conv_loop:
+        lda (SCREEN_LO), y
+        cmp #$1B
+        bcs @conv_skip
+        cmp #$01
+        bcc @conv_skip
+        ora #$40
+        sta (SCREEN_LO), y
+@conv_skip:
+        iny
+        bne @conv_loop
+        inc SCREEN_HI
+        dex
+        bne @conv_loop
+
+        ; Draw copyright text in lowercase (screen codes $01-$1A = lowercase in lowercase charset)
+        ldx #0
+@copy:  lda HSTABLE_COPY, x
+        beq @copy_done
+        sta SCREEN_RAM + 888, x
+        lda #COL_DGREY
+        sta COLOR_RAM + 888, x
+        inx
+        bne @copy
+@copy_done:
+
+        ; Switch to lowercase charset (char ROM at $1800)
+        lda #$16
+        sta VIC_MEMPTR
+
         rts
 
 ; Helper: draw byte (0-99) as 2 decimal digits (Y = screen offset, preserves X)
@@ -4175,6 +4214,10 @@ HSTABLE_HDR:
 
 HSTABLE_PROMPT:
         !scr "fire=continue  f1=save"
+        !byte 0
+
+HSTABLE_COPY:
+        !scr "2026 - ERLING REIZER AS"
         !byte 0
 
 ; Save high score text strings
