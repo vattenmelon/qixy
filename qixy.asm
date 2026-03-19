@@ -141,6 +141,10 @@ PREV_TRAIL_X    = $5B       ; Previous trail char X (for line segments)
 PREV_TRAIL_Y    = $5C       ; Previous trail char Y
 BITMAP_PTR      = $5D       ; Bitmap pointer (16-bit)
 BITMAP_PTR_HI   = $5E
+CHAR_PTR        = $5F       ; Pointer to charset data (16-bit)
+CHAR_PTR_HI     = $60
+STRING_PTR      = $61       ; Pointer to string data (16-bit)
+STRING_PTR_HI   = $62
 
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
@@ -170,6 +174,8 @@ HISCORE_TABLE   = $C600     ; 60 bytes for 5 high scores
 HISCORE_NAME    = $C600     ; Names start here (8 bytes each, entries 12 apart)
 HISCORE_SCORE   = $C608     ; Scores (3 bytes each, entries 12 apart)
 HISCORE_LEVEL   = $C60B     ; Levels (1 byte each, entries 12 apart)
+HUD_BUF         = $C640     ; 80 bytes: 2 rows x 40 cols of screen codes
+HUD_COLOR       = $C690     ; 80 bytes: color for each cell
 ENTRY_NAME      = $C63C     ; 8 bytes for current name entry buffer
 
 ; ============================================================================
@@ -1286,98 +1292,16 @@ GET_TILE:
 ; ============================================================================
 
 DRAW_HUD:
-        ; Score label
-        ldx #0
-@s1:    lda SCORE_TXT, x
-        beq @s2
-        sta SCREEN_RAM + 1, x
-        lda #COL_WHITE
-        sta COLOR_RAM + 1, x
-        inx
-        bne @s1
-
-@s2:    ; Lives label
-        ldx #0
-@s3:    lda LIVES_TXT, x
-        beq @s4
-        sta SCREEN_RAM + 16, x
-        lda #COL_WHITE
-        sta COLOR_RAM + 16, x
-        inx
-        bne @s3
-
-@s4:    ; Level label
-        ldx #0
-@s5:    lda LEVEL_TXT, x
-        beq @s6
-        sta SCREEN_RAM + 26, x
-        lda #COL_WHITE
-        sta COLOR_RAM + 26, x
-        inx
-        bne @s5
-
-@s6:    ; Percent label
-        ldx #0
-@s7:    lda PCT_TXT, x
-        beq @s8
-        sta SCREEN_RAM + 34, x
-        lda #COL_WHITE
-        sta COLOR_RAM + 34, x
-        inx
-        bne @s7
-
-@s8:    jsr UPDATE_HUD
+        ; Build HUD into HUD_BUF, then draw with compact loop
+        ; Row 0: "SCORE: ......  ...LEVEL: .."
+        ; Row 1: "LIVES: .  ...........FILL: ../..%"
+        jsr UPDATE_HUD_BUF
+        jsr DRAW_HUD_BITMAP
         rts
 
 UPDATE_HUD:
-        ; Score (6 digits at position 7)
-        lda SCORE_HI
-        jsr BYTE_TO_DEC
-        stx SCREEN_RAM + 7
-        sty SCREEN_RAM + 8
-        lda SCORE_MID
-        jsr BYTE_TO_DEC
-        stx SCREEN_RAM + 9
-        sty SCREEN_RAM + 10
-        lda SCORE_LO
-        jsr BYTE_TO_DEC
-        stx SCREEN_RAM + 11
-        sty SCREEN_RAM + 12
-
-        ; Color score
-        lda #COL_CYAN
-        ldx #5
-@cs:    sta COLOR_RAM + 7, x
-        dex
-        bpl @cs
-
-        ; Lives at position 23
-        lda LIVES
-        clc
-        adc #$30
-        sta SCREEN_RAM + 23
-        lda #COL_LGREEN
-        sta COLOR_RAM + 23
-
-        ; Level at position 30
-        lda LEVEL
-        clc
-        adc #$30
-        sta SCREEN_RAM + 31
-        lda #COL_YELLOW
-        sta COLOR_RAM + 31
-
-        ; Percent at position 34
-        lda PERCENT_CLAIMED
-        jsr BYTE_TO_DEC
-        stx SCREEN_RAM + 35
-        sty SCREEN_RAM + 36
-        lda #'%'
-        sta SCREEN_RAM + 37
-        lda #COL_LGREEN
-        sta COLOR_RAM + 35
-        sta COLOR_RAM + 36
-        sta COLOR_RAM + 37
+        jsr UPDATE_HUD_BUF
+        jsr DRAW_HUD_BITMAP
         rts
 
 ; Byte in A -> X=tens digit, Y=ones digit (screen codes)
@@ -2538,114 +2462,329 @@ UPDATE_SPARX:
 
 @done:  rts
 
-; Move Sparx along edges
+; Move Sparx along edges using right-hand wall following
 ; Input: X=x, Y=y, A=direction (1=up,2=down,3=left,4=right)
 ; Output: X=new x, Y=new y, A=new direction
 MOVE_SPARX:
-        sta TEMP3           ; Save direction
+        sta TEMP3           ; Save original direction
         stx SAVE_X          ; Save original X
         sty SAVE_Y          ; Save original Y
-        stx TEMP1           ; Working X
-        sty TEMP2           ; Working Y
 
-        ; Try to move in current direction
+        ; Sparx movement: follow borders, enter new claimed borders via shortcuts.
+        ; Interior of playfield is always on the CW side of movement direction.
+        ;
+        ; 1. Check CW side for SHORTCUTS (trail/claimed-on-boundary, NOT border)
+        ; 2. Continue straight
+        ; 3. Turn CW (corners)
+        ; 4. Turn CCW
+        ; 5. Reverse
+
+        ; Step 1: Check CW for shortcuts into claimed territory
         lda TEMP3
-        cmp #1
-        beq @try_up
-        cmp #2
-        beq @try_down
-        cmp #3
-        beq @try_left
-        cmp #4
-        beq @try_right
-        jmp @turn_cw        ; Invalid dir, turn
+        jsr @get_cw
+        jsr @try_shortcut
+        bcs @move_ok
 
-@try_up:
-        dec TEMP2
-        jmp @check
-
-@try_down:
-        inc TEMP2
-        jmp @check
-
-@try_left:
-        dec TEMP1
-        jmp @check
-
-@try_right:
-        inc TEMP1
-
-@check:
-        ; Bounds check
-        lda TEMP1
-        cmp #FIELD_LEFT
-        bcc @turn_cw
-        cmp #FIELD_RIGHT + 1
-        bcs @turn_cw
-        lda TEMP2
-        cmp #FIELD_TOP
-        bcc @turn_cw
-        cmp #FIELD_BOTTOM + 1
-        bcs @turn_cw
-
-        ; Must stay on border or claimed edge
-        ldx TEMP1
-        ldy TEMP2
-        jsr GET_TILE
-        cmp #CHAR_BORDER
-        beq @move_ok
-        cmp #CHAR_CLAIMED
-        beq @move_ok
-        cmp #CHAR_TRAIL_H
-        beq @move_ok
-        cmp #CHAR_TRAIL_V
-        beq @move_ok
-        cmp #CHAR_CORNER_LB
-        beq @move_ok
-        cmp #CHAR_CORNER_RB
-        beq @move_ok
-        cmp #CHAR_CORNER_LT
-        beq @move_ok
-        cmp #CHAR_CORNER_RT
-        beq @move_ok
-
-        ; Not on edge, turn clockwise
-@turn_cw:
+        ; Step 2: Continue straight
         lda TEMP3
-        cmp #1
-        beq @turn_to_right
-        cmp #4
-        beq @turn_to_down
-        cmp #2
-        beq @turn_to_left
-        ; Was left (3), turn up
-        lda #1
-        sta TEMP3
-        jmp @return_orig
-@turn_to_right:
-        lda #4
-        sta TEMP3
-        jmp @return_orig
-@turn_to_down:
-        lda #2
-        sta TEMP3
-        jmp @return_orig
-@turn_to_left:
-        lda #3
-        sta TEMP3
+        jsr @try_dir
+        bcs @move_ok
 
-@return_orig:
-        ; Return original position with new direction
+        ; Step 3: Turn CW (at corners)
+        lda TEMP3
+        jsr @get_cw
+        jsr @try_dir
+        bcs @move_ok
+
+        ; Step 4: Turn CCW
+        lda TEMP3
+        jsr @get_ccw
+        jsr @try_dir
+        bcs @move_ok
+
+        ; Step 5: Reverse
+        lda TEMP3
+        jsr @get_cw
+        jsr @get_cw
+        jsr @try_dir
+        bcs @move_ok
+
+        ; Completely stuck - return original position
         ldx SAVE_X
         ldy SAVE_Y
         lda TEMP3
         rts
 
 @move_ok:
-        ; Return new position with same direction
+        ; A = direction that worked, position in TEMP1/TEMP2
         ldx TEMP1
         ldy TEMP2
-        lda TEMP3
+        rts
+
+; Try shortcut: move in direction A, but ONLY accept trail or claimed-on-boundary
+; (NOT plain border - this prevents wrong turns at outer corners)
+; Returns: C=1 if valid (TEMP1/TEMP2 set, A=dir), C=0 if not
+@try_shortcut:
+        pha                 ; Save direction on stack
+        ldx SAVE_X
+        ldy SAVE_Y
+        pla
+        pha
+        jsr @apply_dir      ; Apply direction to X,Y
+        stx TEMP1
+        sty TEMP2
+        ; Bounds check
+        cpx #FIELD_LEFT
+        bcc @ts_fail
+        cpx #FIELD_RIGHT + 1
+        bcs @ts_fail
+        cpy #FIELD_TOP
+        bcc @ts_fail
+        cpy #FIELD_BOTTOM + 1
+        bcs @ts_fail
+        ; Check tile - only trail and claimed-on-boundary
+        jsr GET_TILE
+        cmp #CHAR_TRAIL_H
+        beq @ts_ok
+        cmp #CHAR_TRAIL_V
+        beq @ts_ok
+        cmp #CHAR_CORNER_LB
+        beq @ts_ok
+        cmp #CHAR_CORNER_RB
+        beq @ts_ok
+        cmp #CHAR_CORNER_LT
+        beq @ts_ok
+        cmp #CHAR_CORNER_RT
+        beq @ts_ok
+        cmp #CHAR_CLAIMED
+        bne @ts_fail
+        ; Save candidate position before boundary check (GET_TILE corrupts TEMP1)
+        lda TEMP1
+        pha
+        lda TEMP2
+        pha
+        jsr @check_on_boundary
+        pla
+        sta TEMP2
+        pla
+        sta TEMP1
+        bcc @ts_fail
+@ts_ok:
+        pla                 ; Get direction from stack
+        sec
+        rts
+@ts_fail:
+        pla
+        clc
+        rts
+
+; Try moving in direction A from SAVE_X/SAVE_Y
+; Returns: C=1 if valid (TEMP1/TEMP2 set, A=dir), C=0 if not
+; Does not modify TEMP3 (original direction preserved)
+@try_dir:
+        pha                 ; Save direction being tried on stack
+        ldx SAVE_X
+        ldy SAVE_Y
+        pla
+        pha
+        jsr @apply_dir      ; Apply direction to X,Y
+        stx TEMP1
+        sty TEMP2
+        ; Bounds check
+        cpx #FIELD_LEFT
+        bcc @td_fail
+        cpx #FIELD_RIGHT + 1
+        bcs @td_fail
+        cpy #FIELD_TOP
+        bcc @td_fail
+        cpy #FIELD_BOTTOM + 1
+        bcs @td_fail
+
+        ; Check tile type
+        jsr GET_TILE
+        cmp #CHAR_BORDER
+        beq @td_ok
+        cmp #CHAR_TRAIL_H
+        beq @td_ok
+        cmp #CHAR_TRAIL_V
+        beq @td_ok
+        cmp #CHAR_CORNER_LB
+        beq @td_ok
+        cmp #CHAR_CORNER_RB
+        beq @td_ok
+        cmp #CHAR_CORNER_LT
+        beq @td_ok
+        cmp #CHAR_CORNER_RT
+        beq @td_ok
+        ; CHAR_CLAIMED only valid if adjacent to CHAR_EMPTY
+        cmp #CHAR_CLAIMED
+        bne @td_fail
+        ; Save candidate position before boundary check (GET_TILE corrupts TEMP1)
+        lda TEMP1
+        pha
+        lda TEMP2
+        pha
+        jsr @check_on_boundary
+        pla
+        sta TEMP2
+        pla
+        sta TEMP1
+        bcc @td_fail
+
+@td_ok:
+        pla                 ; Get tried direction from stack
+        sec                 ; C=1 = success
+        rts
+
+@td_fail:
+        pla                 ; Clean up stack
+        clc                 ; C=0 = fail
+        rts
+
+; Apply direction in A to X,Y registers
+; A: 1=up, 2=down, 3=left, 4=right
+@apply_dir:
+        cmp #1
+        beq @ad_up
+        cmp #2
+        beq @ad_down
+        cmp #3
+        beq @ad_left
+        ; 4 = right
+        inx
+        rts
+@ad_up: dey
+        rts
+@ad_down:
+        iny
+        rts
+@ad_left:
+        dex
+        rts
+
+; Get counter-clockwise direction: A in, A out
+; up->left->down->right->up
+@get_ccw:
+        cmp #1              ; up -> left
+        beq @ccw_left
+        cmp #3              ; left -> down
+        beq @ccw_down
+        cmp #2              ; down -> right
+        beq @ccw_right
+        ; right -> up
+        lda #1
+        rts
+@ccw_left:
+        lda #3
+        rts
+@ccw_down:
+        lda #2
+        rts
+@ccw_right:
+        lda #4
+        rts
+
+; Get clockwise direction: A in, A out
+; up->right->down->left->up
+@get_cw:
+        cmp #1              ; up -> right
+        beq @cw_right
+        cmp #4              ; right -> down
+        beq @cw_down
+        cmp #2              ; down -> left
+        beq @cw_left
+        ; left -> up
+        lda #1
+        rts
+@cw_right:
+        lda #4
+        rts
+@cw_down:
+        lda #2
+        rts
+@cw_left:
+        lda #3
+        rts
+
+; Check if tile at TEMP1,TEMP2 is adjacent to CHAR_EMPTY (on boundary)
+; Returns: C=1 if on boundary, C=0 if not
+@check_on_boundary:
+        ; Save position on stack
+        lda TEMP1
+        pha
+        lda TEMP2
+        pha
+
+        ; Check up
+        pla
+        tay                 ; Y = TEMP2
+        pla
+        tax                 ; X = TEMP1
+        pha                 ; Push TEMP1 back
+        tya
+        pha                 ; Push TEMP2 back
+        cpy #FIELD_TOP
+        beq @cob_no_up
+        dey
+        jsr GET_TILE
+        cmp #CHAR_EMPTY
+        beq @cob_found_cleanup
+
+@cob_no_up:
+        ; Check down - reload from stack
+        pla
+        tay                 ; Y = TEMP2
+        pla
+        tax                 ; X = TEMP1
+        pha
+        tya
+        pha
+        cpy #FIELD_BOTTOM
+        beq @cob_no_down
+        iny
+        jsr GET_TILE
+        cmp #CHAR_EMPTY
+        beq @cob_found_cleanup
+
+@cob_no_down:
+        ; Check left - reload from stack
+        pla
+        tay
+        pla
+        tax
+        pha
+        tya
+        pha
+        cpx #FIELD_LEFT
+        beq @cob_no_left
+        dex
+        jsr GET_TILE
+        cmp #CHAR_EMPTY
+        beq @cob_found_cleanup
+
+@cob_no_left:
+        ; Check right - reload from stack
+        pla
+        tay
+        pla
+        tax
+        cpx #FIELD_RIGHT
+        beq @cob_not_found
+        inx
+        jsr GET_TILE
+        cmp #CHAR_EMPTY
+        beq @cob_found
+
+@cob_not_found:
+        clc
+        rts
+
+@cob_found_cleanup:
+        ; Clean up stack (2 bytes)
+        pla
+        pla
+@cob_found:
+        sec
         rts
 
 ; ============================================================================
@@ -4431,6 +4570,14 @@ INIT_SAD_MUSIC:
 ; Formula: value = (Hz * 16777216) / 985248
 ; Covers E1 to E4 for bass through lead range
 
+; ============================================================================
+; DATA
+; ============================================================================
+; Skip over CHARSET_RAM ($2000-$27FF) and SPRITE_RAM ($2800-$2BFF)
+; to avoid overlapping with reserved VIC memory areas
+CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
+* = $2C00
+
 NOTE_FREQ_LO:
         ; Octave 1 (deep bass) - notes 0-11
         !byte $17           ; 0:  E1  (41.2 Hz) - $0217
@@ -4445,7 +4592,6 @@ NOTE_FREQ_LO:
         !byte $52           ; 9:  C#2 (69.3 Hz) - $0352
         !byte $85           ; 10: D2  (73.4 Hz) - $0385
         !byte $BB           ; 11: D#2 (77.8 Hz) - $03BB
-
         ; Octave 2 (bass) - notes 12-23
         !byte $F5           ; 12: E2  (82.4 Hz) - $03F5
         !byte $34           ; 13: F2  (87.3 Hz) - $0434
@@ -4459,7 +4605,6 @@ NOTE_FREQ_LO:
         !byte $F6           ; 21: C#3 (138.6 Hz)- $06F6
         !byte $6E           ; 22: D3  (146.8 Hz)- $076E
         !byte $F0           ; 23: D#3 (155.6 Hz)- $07F0
-
         ; Octave 3 (mid) - notes 24-35
         !byte $7B           ; 24: E3  (164.8 Hz)- $087B
         !byte $10           ; 25: F3  (174.6 Hz)- $0910
@@ -4473,7 +4618,6 @@ NOTE_FREQ_LO:
         !byte $82           ; 33: C#4 (277.2 Hz)- $0F82
         !byte $98           ; 34: D4  (293.7 Hz)- $1098
         !byte $C2           ; 35: D#4 (311.1 Hz)- $11C2
-
         ; Octave 4 (lead) - notes 36-47
         !byte $02           ; 36: E4  (329.6 Hz)- $1302
         !byte $5A           ; 37: F4  (349.2 Hz)- $145A
@@ -4486,62 +4630,13 @@ NOTE_FREQ_LO:
 
 NOTE_FREQ_HI:
         ; Octave 1
-        !byte $02           ; E1
-        !byte $02           ; F1
-        !byte $02           ; F#1
-        !byte $02           ; G1
-        !byte $02           ; G#1
-        !byte $02           ; A1
-        !byte $02           ; A#1
-        !byte $02           ; B1
-        !byte $03           ; C2
-        !byte $03           ; C#2
-        !byte $03           ; D2
-        !byte $03           ; D#2
-
+        !byte $02,$02,$02,$02,$02,$02,$02,$02,$03,$03,$03,$03
         ; Octave 2
-        !byte $03           ; E2
-        !byte $04           ; F2
-        !byte $04           ; F#2
-        !byte $04           ; G2
-        !byte $05           ; G#2
-        !byte $05           ; A2
-        !byte $05           ; A#2
-        !byte $06           ; B2
-        !byte $06           ; C3
-        !byte $06           ; C#3
-        !byte $07           ; D3
-        !byte $07           ; D#3
-
+        !byte $03,$04,$04,$04,$05,$05,$05,$06,$06,$06,$07,$07
         ; Octave 3
-        !byte $08           ; E3
-        !byte $09           ; F3
-        !byte $09           ; F#3
-        !byte $0A           ; G3
-        !byte $0B           ; G#3
-        !byte $0B           ; A3
-        !byte $0C           ; A#3
-        !byte $0D           ; B3
-        !byte $0E           ; C4
-        !byte $0F           ; C#4
-        !byte $10           ; D4
-        !byte $11           ; D#4
-
+        !byte $08,$09,$09,$0A,$0B,$0B,$0C,$0D,$0E,$0F,$10,$11
         ; Octave 4
-        !byte $13           ; E4
-        !byte $14           ; F4
-        !byte $15           ; F#4
-        !byte $17           ; G4
-        !byte $19           ; G#4
-        !byte $1A           ; A4
-        !byte $1C           ; A#4
-        !byte $1E           ; B4
-
-; ============================================================================
-; MUSIC PATTERNS - Jan Hammer / Miami Vice Style
-; ============================================================================
-; Key of E minor - the Miami Vice key
-; Pattern is 32 steps, tempo ~8 Hz = 4 second loop
+        !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
 ; Bass pattern - driving 8th notes with octave jumps
 ; Uses notes: 0=E1, 12=E2, 24=E3, 15=G2, 17=A2, 19=B2
@@ -4647,14 +4742,6 @@ SAD_ARP_PATTERN:
         !byte $FF, $FF, $FF, $FF   ; silence
         !byte $FF, $FF, $FF, $FF   ; silence
 
-; ============================================================================
-; DATA
-; ============================================================================
-; Skip over CHARSET_RAM ($2000-$27FF) and SPRITE_RAM ($2800-$2BFF)
-; to avoid overlapping with reserved VIC memory areas
-CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
-* = $2C00
-
 TITLE_TXT:
         !scr "  qixy  "
         !byte 0
@@ -4680,19 +4767,19 @@ START_TXT:
         !byte 0
 
 SCORE_TXT:
-        !scr "score:"
+        !scr "score: "
         !byte 0
 
 LIVES_TXT:
-        !scr "lives:"
+        !scr "lives: "
         !byte 0
 
 LEVEL_TXT:
-        !scr "lvl:"
+        !scr "level: "
         !byte 0
 
-PCT_TXT:
-        !scr " "
+FILL_TXT:
+        !scr "fill: "
         !byte 0
 
 GAMEOVER_TXT:
@@ -4995,6 +5082,186 @@ SET_BITMAP_COLOR:
         sta (SCREEN_LO), y
         ldx TEMP3
         ldy TEMP4
+        rts
+
+; Draw a character from charset into bitmap
+; A = screen code, X = column (0-39), Y = row (0-24)
+DRAW_BITMAP_CHAR:
+        stx TEMP3
+        sty TEMP4
+        ; Calculate charset source address: CHARSET_RAM + screencode * 8
+        ; Screen code in A
+        ldx #0
+        stx CHAR_PTR_HI
+        asl
+        rol CHAR_PTR_HI
+        asl
+        rol CHAR_PTR_HI
+        asl
+        rol CHAR_PTR_HI
+        sta CHAR_PTR
+        lda CHAR_PTR_HI
+        clc
+        adc #>CHARSET_RAM
+        sta CHAR_PTR_HI
+        ; Calculate bitmap destination: GAMEPLAY_BITMAP + row * 320 + col * 8
+        ldy TEMP4                   ; row
+        lda BITMAP_ROW_LO, y
+        sta BITMAP_PTR
+        lda BITMAP_ROW_HI, y
+        sta BITMAP_PTR_HI
+        lda TEMP3                   ; col
+        asl
+        asl
+        asl
+        bcc +
+        inc BITMAP_PTR_HI
++       clc
+        adc BITMAP_PTR
+        sta BITMAP_PTR
+        bcc +
+        inc BITMAP_PTR_HI
++       ; Copy 8 bytes from charset to bitmap
+        ldy #0
+-       lda (CHAR_PTR), y
+        sta (BITMAP_PTR), y
+        iny
+        cpy #8
+        bne -
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; ============================================================================
+; HUD BITMAP ROUTINES
+; ============================================================================
+
+; Build HUD content into HUD_BUF (80 bytes = 2 rows of 40)
+; and HUD_COLOR (80 bytes = colors for each cell)
+UPDATE_HUD_BUF:
+        ; Clear buffer with spaces and white-on-black color
+        ldx #79
+        lda #$20                    ; space screen code
+@clr:   sta HUD_BUF, x
+        dex
+        bpl @clr
+        ldx #79
+        lda #$10                    ; white on black
+@clrc:  sta HUD_COLOR, x
+        dex
+        bpl @clrc
+
+        ; Row 0: "SCORE: " at col 0
+        ldx #0
+@sc:    lda SCORE_TXT, x
+        beq @sc_done
+        sta HUD_BUF, x
+        inx
+        bne @sc
+@sc_done:
+        ; Score digits at col 7
+        lda SCORE_HI
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 7
+        sty HUD_BUF + 8
+        lda SCORE_MID
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 9
+        sty HUD_BUF + 10
+        lda SCORE_LO
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 11
+        sty HUD_BUF + 12
+        ; Color score cyan ($30)
+        lda #$30
+        ldx #5
+@csc:   sta HUD_COLOR + 7, x
+        dex
+        bpl @csc
+
+        ; "LEVEL: " at col 28
+        ldx #0
+@lv:    lda LEVEL_TXT, x
+        beq @lv_done
+        sta HUD_BUF + 28, x
+        inx
+        bne @lv
+@lv_done:
+        ; Level digits at col 35
+        lda LEVEL
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 35
+        sty HUD_BUF + 36
+        ; Color level yellow ($70)
+        lda #$70
+        sta HUD_COLOR + 35
+        sta HUD_COLOR + 36
+
+        ; Row 1: "LIVES: " at col 0 (offset +40)
+        ldx #0
+@li:    lda LIVES_TXT, x
+        beq @li_done
+        sta HUD_BUF + 40, x
+        inx
+        bne @li
+@li_done:
+        ; Lives digit at col 7
+        lda LIVES
+        clc
+        adc #$30
+        sta HUD_BUF + 47
+        ; Color lives green ($50)
+        lda #$50
+        sta HUD_COLOR + 47
+
+        ; "FILL: " at col 22 (offset +40 = 62)
+        ldx #0
+@fi:    lda FILL_TXT, x
+        beq @fi_done
+        sta HUD_BUF + 62, x
+        inx
+        bne @fi
+@fi_done:
+        ; Fill "XX/YY%" at col 28 (offset +40 = 68)
+        lda PERCENT_CLAIMED
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 68
+        sty HUD_BUF + 69
+        lda #$2F                    ; /
+        sta HUD_BUF + 70
+        lda TARGET_PERCENT
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 71
+        sty HUD_BUF + 72
+        lda #$25                    ; %
+        sta HUD_BUF + 73
+        ; Color fill pct green ($50)
+        lda #$50
+        sta HUD_COLOR + 68
+        sta HUD_COLOR + 69
+        rts
+
+; Draw HUD_BUF to bitmap (rows 0-1, cols 0-39)
+DRAW_HUD_BITMAP:
+        ldx #0                      ; buffer index / column
+        ldy #0                      ; row
+@loop:  lda HUD_BUF, x
+        jsr DRAW_BITMAP_CHAR
+        lda HUD_COLOR, x
+        jsr SET_BITMAP_COLOR
+        inx
+        cpx #40
+        bne @loop
+        ; Row 1
+        ldx #0
+        ldy #1
+@loop2: lda HUD_BUF + 40, x
+        jsr DRAW_BITMAP_CHAR
+        lda HUD_COLOR + 40, x
+        jsr SET_BITMAP_COLOR
+        inx
+        cpx #40
+        bne @loop2
         rts
 
 ; Draw pixel-precise trail in bitmap cell
