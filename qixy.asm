@@ -2322,9 +2322,12 @@ UPDATE_QIX:
         sta QIX_DY
 
 @no_change:
-        ; Move every other frame
+        ; Move every 6th frame (slower Qix)
         lda FRAME_COUNT
-        and #$01
+        sec
+-       sbc #6
+        bcs -
+        adc #6          ; A = FRAME_COUNT mod 6
         beq +
         jmp @done
 +
