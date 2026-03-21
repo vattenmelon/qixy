@@ -4297,8 +4297,8 @@ RANDOM:
 ; ============================================================================
 ; MIAMI VICE STYLE MUSIC ENGINE
 ; ============================================================================
-; Authentic Jan Hammer sound - E minor, driving bass, synth lead
-; All three SID voices for that iconic 80s TV soundtrack feel
+; Crockett's Theme inspired - Em/C/Am/B progression
+; Driving octave bass, soaring sparse lead, atmospheric pads
 
 INIT_MUSIC:
         ; Reset music state
@@ -4313,36 +4313,36 @@ INIT_MUSIC:
         lda #1
         sta MUSIC_ENABLED
 
-        ; Voice 1: Deep driving bass - sawtooth for punch
+        ; Voice 1: Driving bass - sawtooth for 80s punch
         lda #$00
         sta SID_PW_LO1
-        lda #$08
+        lda #$06
         sta SID_PW_HI1
-        lda #$00            ; Attack=0, Decay=0 - instant punch
+        lda #$02            ; Attack=0, Decay=2 - tight punch
         sta SID_AD1
-        lda #$F0            ; Sustain=15, Release=0 - full sustain
+        lda #$A0            ; Sustain=10, Release=0
         sta SID_SR1
 
-        ; Voice 2: Synth lead - pulse wave with PWM feel
+        ; Voice 2: Soaring synth lead - pulse wave, Jan Hammer style
         lda #$00
         sta SID_PW_LO2
-        lda #$08            ; 50% pulse width - full sound
+        lda #$08            ; 50% pulse width
         sta SID_PW_HI2
-        lda #$0A            ; Attack=0, Decay=10
+        lda #$1A            ; Attack=1, Decay=10 - slight swell
         sta SID_AD2
-        lda #$A0            ; Sustain=10, Release=0
+        lda #$A6            ; Sustain=10, Release=6 - smooth tail
         sta SID_SR2
 
-        ; Voice 3: Synth pad/arpeggio - triangle for warmth
-        lda #$09            ; Attack=0, Decay=9
+        ; Voice 3: Atmospheric pad - triangle for warmth
+        lda #$6B            ; Attack=6, Decay=11 - slow swell
         sta SID_AD3
-        lda #$80            ; Sustain=8, Release=0
+        lda #$50            ; Sustain=5, Release=0
         sta SID_SR3
 
-        ; Filter - lowpass for warm bass-heavy sound
+        ; Filter - lowpass, brighter cutoff for 80s sheen
         lda #$00
         sta SID_FILT_LO
-        lda #$30            ; Lower cutoff for warmth
+        lda #$40            ; Higher cutoff - brighter 80s sound
         sta SID_FILT_HI
         lda #$71            ; Filter voice 1 only + resonance
         sta SID_FILT_CTRL
@@ -4361,10 +4361,10 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo control - every 6 frames (~8 Hz)
+        ; Tempo control - every 7 frames (~7 Hz, slower groove)
         inc MUSIC_TIMER
         lda MUSIC_TIMER
-        cmp #6
+        cmp #7
         bcc @do_arp
         lda #0
         sta MUSIC_TIMER
@@ -4681,59 +4681,67 @@ NOTE_FREQ_HI:
         ; Octave 4
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
-; Bass pattern - driving 8th notes with octave jumps
-; Uses notes: 0=E1, 12=E2, 24=E3, 15=G2, 17=A2, 19=B2
+; Bass pattern - driving octave pulse, Crockett's Theme style
+; Chord progression: Em - C/G - Am - B->Em
+; 0=E1, 3=G1, 5=A1, 7=B1, 8=C2, 12=E2, 15=G2, 17=A2, 19=B2, 20=C3
 BASS_PATTERN:
-        ; E minor groove (bars 1-2)
-        !byte 12, 12, 0, 12     ; E2-E2-E1-E2 (driving)
-        !byte 12, 0, 12, 19     ; E2-E1-E2-B2
-        !byte 12, 12, 0, 12     ; E2-E2-E1-E2
-        !byte 19, 17, 15, 12    ; B2-A2-G2-E2 (walkdown)
-        ; Variation (bars 3-4)
-        !byte 12, 12, 24, 12    ; E2-E2-E3-E2 (octave up)
-        !byte 12, 24, 12, 19    ; E2-E3-E2-B2
-        !byte 17, 17, 15, 17    ; A2-A2-G2-A2
-        !byte 19, 17, 15, 12    ; B2-A2-G2-E2 (resolve)
+        ; Bar 1 (Em): Driving octave pulse
+        !byte 12, $FF, 12, 0    ; E2-rest-E2-E1
+        !byte 12, $FF, 12, 0    ; E2-rest-E2-E1
+        ; Bar 2 (C/G): Harmonic shift
+        !byte 20, $FF, 20, 8    ; C3-rest-C3-C2
+        !byte 15, $FF, 15, 3    ; G2-rest-G2-G1
+        ; Bar 3 (Am): Tension
+        !byte 17, $FF, 17, 5    ; A2-rest-A2-A1
+        !byte 17, $FF, 17, 5    ; A2-rest-A2-A1
+        ; Bar 4 (B->Em): Resolution
+        !byte 19, $FF, 19, 7    ; B2-rest-B2-B1
+        !byte 12, $FF, 12, 0    ; E2-rest-E2-E1
 
-; Lead melody - soaring Jan Hammer style
-; Uses notes: 24=E3, 27=G3, 29=A3, 31=B3, 36=E4, 39=G4
+; Lead melody - soaring, sparse, Crockett's Theme vibe
+; Long notes with space between them - less is more
+; 29=A3, 31=B3, 32=C4, 34=D4, 36=E4, 39=G4
 LEAD_PATTERN:
-        ; Phrase 1 - building (bars 1-2)
-        !byte $FF, $FF, 24, 27  ; rest-rest-E3-G3
-        !byte 29, 27, 24, $FF   ; A3-G3-E3-rest
-        !byte $FF, 24, 27, 29   ; rest-E3-G3-A3
-        !byte 31, 29, 27, 24    ; B3-A3-G3-E3
-        ; Phrase 2 - soaring (bars 3-4)
-        !byte 36, $FF, 36, 39   ; E4-rest-E4-G4
-        !byte 36, 31, 29, 27    ; E4-B3-A3-G3
-        !byte 29, $FF, 27, 29   ; A3-rest-G3-A3
-        !byte 31, 29, 27, 24    ; B3-A3-G3-E3
+        ; Bar 1: Atmospheric opening - emerge from silence
+        !byte $FF, $FF, $FF, 36 ; rest-rest-rest-E4
+        !byte $FF, $FF, 39, $FF ; rest-rest-G4-rest
+        ; Bar 2: Descend with space
+        !byte 36, $FF, $FF, 32  ; E4-rest-rest-C4
+        !byte $FF, $FF, $FF, $FF ; rest (let it breathe)
+        ; Bar 3: Second phrase - building
+        !byte $FF, $FF, 29, $FF ; rest-rest-A3-rest
+        !byte 32, $FF, 36, $FF  ; C4-rest-E4-rest
+        ; Bar 4: Climax and resolve
+        !byte 39, $FF, 36, $FF  ; G4-rest-E4-rest
+        !byte 34, $FF, 31, $FF  ; D4-rest-B3-rest
 
-; Pad/chord pattern - sustained notes for atmosphere
-; Uses notes: 24=E3, 27=G3, 31=B3 (E minor chord tones)
+; Pad/chord pattern - sustained notes for 80s atmosphere
+; Follows chord progression: Em - C - Am - B/Em
 PAD_PATTERN:
-        ; E minor chord sustained
-        !byte 24, 24, 24, 24    ; E3 sustained
-        !byte 27, 27, 27, 27    ; G3
-        !byte 31, 31, 31, 31    ; B3
-        !byte 27, 27, 24, 24    ; G3-E3
-        ; Second half
+        ; Bar 1 (Em): E3 sustained
         !byte 24, 24, 24, 24    ; E3
-        !byte 31, 31, 31, 31    ; B3
+        !byte 24, 24, 24, 24    ; E3
+        ; Bar 2 (C/G): Shift to C then G
+        !byte 20, 20, 20, 20    ; C3
+        !byte 27, 27, 27, 27    ; G3
+        ; Bar 3 (Am): A sustained
         !byte 29, 29, 29, 29    ; A3
-        !byte 27, 27, 24, 24    ; G3-E3
+        !byte 29, 29, 29, 29    ; A3
+        ; Bar 4 (B->Em): Resolve
+        !byte 19, 19, 19, 19    ; B2
+        !byte 24, 24, 24, 24    ; E3
 
-; Arpeggio pattern - plays between main beats
-; E minor arpeggio: E-G-B
+; Arpeggio pattern - broken chord shimmer between beats
+; Follows chord changes for harmonic richness
 ARP_PATTERN:
-        !byte 36, 39, 43, 39    ; E4-G4-B4-G4
-        !byte 36, 39, 43, 39    ; E4-G4-B4-G4
-        !byte 36, 39, 43, 39    ; E4-G4-B4-G4
-        !byte 36, 39, 43, 39    ; E4-G4-B4-G4
-        !byte 36, 41, 43, 41    ; E4-A4-B4-A4
-        !byte 36, 41, 43, 41    ; E4-A4-B4-A4
-        !byte 36, 39, 43, 39    ; E4-G4-B4-G4
-        !byte 36, 39, 43, 39    ; E4-G4-B4-G4
+        !byte 36, 39, 43, 39    ; Em: E4-G4-B4-G4
+        !byte 36, 39, 43, 39    ; Em: E4-G4-B4-G4
+        !byte 32, 36, 39, 36    ; C:  C4-E4-G4-E4
+        !byte 27, 31, 39, 31    ; G:  G3-B3-G4-B3
+        !byte 29, 32, 36, 32    ; Am: A3-C4-E4-C4
+        !byte 29, 32, 36, 32    ; Am: A3-C4-E4-C4
+        !byte 31, 36, 43, 36    ; B:  B3-E4-B4-E4
+        !byte 36, 39, 43, 39    ; Em: E4-G4-B4-G4
 
 ; ============================================================================
 ; SAD MUSIC PATTERNS - Game Over
