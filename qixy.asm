@@ -146,6 +146,9 @@ CHAR_PTR_HI     = $60
 STRING_PTR      = $61       ; Pointer to string data (16-bit)
 STRING_PTR_HI   = $62
 
+; Qix speed control (not in zero page to avoid KERNAL/BASIC conflicts)
+QIX_SPEED       = $C5F0     ; Frame divisor for Qix movement (higher = slower)
+
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
 FILL_QIX_Y      = $40       ; Qix Y when fill started
@@ -931,6 +934,8 @@ START_NEW_GAME:
         sta LEVEL
         lda #75
         sta TARGET_PERCENT
+        lda #6
+        sta QIX_SPEED
 
         jsr INIT_LEVEL
 
@@ -2322,12 +2327,12 @@ UPDATE_QIX:
         sta QIX_DY
 
 @no_change:
-        ; Move every 6th frame (slower Qix)
+        ; Move every QIX_SPEED-th frame
         lda FRAME_COUNT
         sec
--       sbc #6
+-       sbc QIX_SPEED
         bcs -
-        adc #6          ; A = FRAME_COUNT mod 6
+        adc QIX_SPEED   ; A = FRAME_COUNT mod QIX_SPEED
         beq +
         jmp @done
 +
@@ -3114,6 +3119,20 @@ UPDATE_LEVEL_DONE:
         lda #1
         sta LEVEL
 @ok:
+        ; Speed up Qix (25% faster each level)
+        ; New speed = speed * 3/4 (reduce by 25%)
+        lda QIX_SPEED
+        lsr             ; speed / 2
+        lsr             ; speed / 4
+        sta TEMP1       ; TEMP1 = speed / 4
+        lda QIX_SPEED
+        sec
+        sbc TEMP1       ; speed - speed/4 = speed * 3/4
+        bne @spd_ok
+        lda #1          ; minimum speed divisor of 1
+@spd_ok:
+        sta QIX_SPEED
+
         ; Harder target
         lda TARGET_PERCENT
         clc
