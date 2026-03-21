@@ -145,6 +145,7 @@ CHAR_PTR        = $5F       ; Pointer to charset data (16-bit)
 CHAR_PTR_HI     = $60
 STRING_PTR      = $61       ; Pointer to string data (16-bit)
 STRING_PTR_HI   = $62
+GRACE_TIMER     = $63       ; Post-claim invincibility timer (frames)
 
 ; Qix speed control (not in zero page to avoid KERNAL/BASIC conflicts)
 QIX_SPEED       = $C5F0     ; Frame divisor for Qix movement (higher = slower)
@@ -379,6 +380,11 @@ MAIN_LOOP:
         jsr UPDATE_PLAYER
         jsr UPDATE_QIX
         jsr UPDATE_SPARX
+        ; Decrement grace timer if active
+        lda GRACE_TIMER
+        beq @no_grace_dec
+        dec GRACE_TIMER
+@no_grace_dec:
         jsr CHECK_COLLISIONS
         jsr UPDATE_SPRITES
         jsr ANIMATE_COLORS
@@ -924,6 +930,7 @@ START_NEW_GAME:
         sta PREV_FIRE
         sta FILL_STATE
         sta FILL_COLOR_IDX
+        sta GRACE_TIMER
 
         lda #$FF
         sta PREV_TRAIL_X        ; Initialize for line drawing
@@ -1725,6 +1732,10 @@ COMPLETE_CLAIM:
         sta FILL_INDEX      ; Start at first trail tile
         lda #1
         sta FILL_STATE      ; Phase 1 = trail conversion
+
+        ; Grant grace period (invincibility during and after claim)
+        lda #90             ; ~1.5 seconds at 60fps
+        sta GRACE_TIMER
         rts
 
 ; ============================================================================
@@ -2800,6 +2811,10 @@ MOVE_SPARX:
 ; ============================================================================
 
 CHECK_COLLISIONS:
+        ; Skip all collisions during grace period
+        lda GRACE_TIMER
+        bne @done
+
         ; Player vs Sparx 1
         lda PLAYER_X
         cmp SPARX1_X
@@ -3044,6 +3059,21 @@ UPDATE_SPRITES:
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y3
 
+        ; Player color: grace period blink (yellow/red)
+        lda GRACE_TIMER
+        beq @no_grace
+        lda FRAME_COUNT
+        and #$04
+        beq @grace_red
+        lda #COL_YELLOW
+        sta VIC_SPRITE_COL
+        rts
+@grace_red:
+        lda #COL_RED
+        sta VIC_SPRITE_COL
+        rts
+
+@no_grace:
         ; Player color flash when drawing (neon effect)
         lda PLAYER_DRAWING
         beq @normal
