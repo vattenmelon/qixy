@@ -146,6 +146,7 @@ CHAR_PTR_HI     = $60
 STRING_PTR      = $61       ; Pointer to string data (16-bit)
 STRING_PTR_HI   = $62
 GRACE_TIMER     = $63       ; Post-claim invincibility timer (frames)
+PREV_PERCENT    = $64       ; Percentage before current claim (for extra life check)
 
 ; Qix speed control (not in zero page to avoid KERNAL/BASIC conflicts)
 QIX_SPEED       = $C5F0     ; Frame divisor for Qix movement (higher = slower)
@@ -930,6 +931,7 @@ START_NEW_GAME:
         sta PREV_FIRE
         sta FILL_STATE
         sta FILL_COLOR_IDX
+        lda #120            ; 2 second grace period at start (~60fps)
         sta GRACE_TIMER
 
         lda #$FF
@@ -1719,6 +1721,10 @@ UPDATE_PLAYER:
 ; ============================================================================
 
 COMPLETE_CLAIM:
+        ; Save current percentage before claim (for extra life check)
+        lda PERCENT_CLAIMED
+        sta PREV_PERCENT
+
         ; Save Qix position NOW before it can move during fill phases
         ; This prevents race condition where Qix moves out of its area
         lda QIX_X
@@ -1830,6 +1836,17 @@ FINISH_FILL:
         lda GAME_STATE
         cmp #1
         bne @not_done
+
+        ; Check if this claim was >50% of the field in one try
+        lda PERCENT_CLAIMED
+        sec
+        sbc PREV_PERCENT
+        cmp #50
+        bcc @no_extra_life
+        ; Award extra life
+        inc LIVES
+        jsr SFX_EXTRA_LIFE
+@no_extra_life:
 
         ; Check for level complete
         lda PERCENT_CLAIMED
@@ -2934,6 +2951,9 @@ UPDATE_DYING:
         ; Restart the music
         jsr INIT_MUSIC
 
+        lda #120            ; 2 second grace period after respawn
+        sta GRACE_TIMER
+
         jsr UPDATE_HUD
         rts
 
@@ -3074,21 +3094,7 @@ UPDATE_SPRITES:
         rts
 
 @no_grace:
-        ; Player color flash when drawing (neon effect)
-        lda PLAYER_DRAWING
-        beq @normal
-        lda FRAME_COUNT
-        and #$04
-        beq @flash
-        lda #COL_LGREEN         ; Light green
-        sta VIC_SPRITE_COL
-        rts
-@flash:
-        lda #COL_PINK           ; Pink flash (matches trail)
-        sta VIC_SPRITE_COL
-        rts
-@normal:
-        lda #COL_LGREEN         ; Normal: light green
+        lda #COL_WHITE          ; Normal: white
         sta VIC_SPRITE_COL
         rts
 
@@ -4330,6 +4336,20 @@ SFX_CLAIM:
         lda #$09
         sta SID_AD1
         lda #$00
+        sta SID_SR1
+        rts
+
+SFX_EXTRA_LIFE:
+        ; High rising tone on voice 1 for extra life fanfare
+        lda #$00
+        sta SID_FREQ_LO1
+        lda #$20
+        sta SID_FREQ_HI1
+        lda #$11            ; Triangle wave
+        sta SID_CTRL1
+        lda #$0A
+        sta SID_AD1
+        lda #$A0
         sta SID_SR1
         rts
 

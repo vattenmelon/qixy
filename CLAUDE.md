@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-QIXY is a Commodore 64 game written in 6502 assembly language - a modern recreation of the classic arcade game Qix. The entire game is contained in a single assembly source file (`qixy.asm`) that compiles to a `.prg` executable.
+QIXY is a Commodore 64 game written in 6502 assembly language - a modern recreation of the classic arcade game Qix. The game is primarily contained in a single ~6000-line assembly source file (`qixy.asm`) plus a generated `title_data.asm` for the title screen graphics, compiling to a `.prg` executable.
 
 ## Build Commands
 
@@ -45,8 +45,11 @@ make clean
 - `$2800-$2BFF`: Sprite data
 - `$0400-$07E7`: Screen RAM (gameplay)
 - `$D800-$DBE7`: Color RAM
-- `$C000-$C0FF`: Trail buffer (safe location above BASIC)
-- `$C100-$C1FF`: Game field state buffer
+- `$C000-$C07F`: Trail buffer X coordinates (max 128 segments)
+- `$C080-$C0FF`: Trail buffer Y coordinates
+- `$C100-$C1FF`: Flood fill stack X (256 entries)
+- `$C200-$C2FF`: Flood fill stack Y (256 entries)
+- `$C600-$C63B`: High score table (5 entries, 12 bytes each)
 
 ### Title Screen (VIC Bank 1)
 - `$5C00-$5FE7`: Screen RAM for title (1000 bytes)
@@ -54,8 +57,8 @@ make clean
 - Title color data stored at TITLE_COLORS label, copied to `$D800` at runtime
 
 ### Key Constants
-- Playfield boundaries defined as FIELD_LEFT (1), FIELD_TOP (3), FIELD_RIGHT (38), FIELD_BOTTOM (22)
-- Game uses zero page extensively (`$02-$42`) for performance-critical variables
+- Playfield boundaries defined as FIELD_LEFT (1), FIELD_TOP (3), FIELD_RIGHT (38), FIELD_BOTTOM (23)
+- Game uses zero page extensively (`$02-$44`) for performance-critical variables
 - Hardware registers mapped to standard C64 addresses (VIC-II at `$D000`, SID at `$D400`, CIA at `$DC00/$DD00`)
 
 ## Graphics Pipeline
@@ -67,6 +70,11 @@ The title screen uses a custom asset generation workflow:
 3. **Output**: `title_data.asm` contains bitmap data, screen RAM, and color RAM
 4. **Build**: Main `qixy.asm` includes `title_data.asm` at assembly time
 
+Additional tools in `tools/`:
+- `generate_title.py` - Generate title artwork programmatically
+- `add_title_text.py` / `add_text_to_png.py` - Add text overlays to title images
+- `add_credits_320.py` - Add credits text to 320x200 title image
+
 **To update title graphics:**
 ```bash
 cd tools
@@ -75,26 +83,32 @@ cd ..
 ./build.sh
 ```
 
+Note: `build.sh` also automatically creates a D64 disk image if `c1541` is available.
+
 ## Game Architecture
 
 ### State Machine
-Game state controlled by GAME_STATE variable:
+Game state controlled by GAME_STATE variable (`$1C`):
 - 0 = title screen
 - 1 = playing
 - 2 = dying
 - 3 = level complete
 - 4 = game over
+- 5 = high score entry
+- 6 = high score display
 
 ### Core Systems
 - **Player movement**: Joystick port 2 input, sprite-based with trail drawing
 - **Enemy AI**: Qix (bouncing enemy) and Sparx (border patrol)
 - **Territory claiming**: Flood-fill algorithm runs incrementally to avoid frame drops
 - **Collision detection**: Monitors trail intersections and sprite overlaps
-- **Audio**: SID chip sound effects with music state machine
+- **Audio**: SID chip sound effects with music state machine (normal and sad/game-over modes)
 - **Scoring**: Multi-byte score tracking with percentage-based level progression (75% target)
+- **High scores**: Persistent high score table with name entry (5 entries stored at `$C600`)
 
 ### Performance Considerations
-- Fill operations run incrementally (8 stack ops per frame, 32 scan ops per frame)
+- Fill operations run incrementally (`FLOOD_OPS_PER_FRAME = 8`, `SCAN_OPS_PER_FRAME = 32`)
+- Fill state machine has 6 phases: inactive, trail conversion, flood fill, claim, restore, calculate percentage
 - Keeps game responsive during expensive flood-fill calculations
 - Tuned for ~20000 cycles per frame on C64 hardware
 
