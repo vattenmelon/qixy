@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Python (tools/)
+__pycache__/
+*.pyc
+
+# Assembler / build scratch
+*.o
+symbols*.txt
+/build
+
+# Backup / scratch builds
+*_orig.prg
+*_orig.d64
+preview.png
