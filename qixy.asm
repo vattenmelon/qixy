@@ -3179,7 +3179,7 @@ UPDATE_LEVEL_DONE:
 @pct_ok:
         sta TARGET_PERCENT
 
-        jsr INIT_LEVEL
+        jsr INIT_LEVEL_BG
 
         lda #1
         sta GAME_STATE
@@ -4275,7 +4275,7 @@ HSTABLE_PROMPT:
         !byte 0
 
 HSTABLE_COPY:
-        !scr "2026 - ERLING REIZER AS"
+        !scr "2026 - VATTENMELON"
         !byte 0
 
 ; Save high score text strings
@@ -4395,28 +4395,28 @@ INIT_MUSIC:
         lda #$A0            ; Sustain=10, Release=0
         sta SID_SR1
 
-        ; Voice 2: Soaring synth lead - pulse wave, Jan Hammer style
+        ; Voice 2: Soaring synth lead - narrow pulse, Jan Hammer reed tone
         lda #$00
         sta SID_PW_LO2
-        lda #$08            ; 50% pulse width
+        lda #$04            ; ~25% pulse - nasal, vocal character
         sta SID_PW_HI2
-        lda #$1A            ; Attack=1, Decay=10 - slight swell
+        lda #$3B            ; Attack=3, Decay=11 - soft swell into note
         sta SID_AD2
-        lda #$A6            ; Sustain=10, Release=6 - smooth tail
+        lda #$A9            ; Sustain=10, Release=9 - long legato tail
         sta SID_SR2
 
         ; Voice 3: Atmospheric pad - triangle for warmth
-        lda #$6B            ; Attack=6, Decay=11 - slow swell
+        lda #$7C            ; Attack=7, Decay=12 - slow swell
         sta SID_AD3
-        lda #$50            ; Sustain=5, Release=0
+        lda #$60            ; Sustain=6, Release=0
         sta SID_SR3
 
-        ; Filter - lowpass, brighter cutoff for 80s sheen
+        ; Filter - lowpass, warm cutoff for Miami night sheen
         lda #$00
         sta SID_FILT_LO
-        lda #$40            ; Higher cutoff - brighter 80s sound
+        lda #$30            ; Warmer cutoff - softens the edges
         sta SID_FILT_HI
-        lda #$71            ; Filter voice 1 only + resonance
+        lda #$72            ; Filter voices 1+2 + resonance for character
         sta SID_FILT_CTRL
         lda #$1F            ; Lowpass + max volume
         sta SID_VOLUME
@@ -4433,10 +4433,10 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo control - every 7 frames (~7 Hz, slower groove)
+        ; Tempo control - every 9 frames (~5.5 Hz, laid-back Miami groove)
         inc MUSIC_TIMER
         lda MUSIC_TIMER
-        cmp #7
+        cmp #9
         bcc @do_arp
         lda #0
         sta MUSIC_TIMER
@@ -4513,7 +4513,7 @@ UPDATE_MUSIC:
 @do_arp:
         ; Arpeggio runs between main beats for shimmer
         lda MUSIC_TIMER
-        cmp #3
+        cmp #4
         bne @done
 
         ; Quick arpeggio note change on voice 3
@@ -4754,66 +4754,53 @@ NOTE_FREQ_HI:
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
 ; Bass pattern - driving octave pulse, Crockett's Theme style
-; Chord progression: Em - C/G - Am - B->Em
-; 0=E1, 3=G1, 5=A1, 7=B1, 8=C2, 12=E2, 15=G2, 17=A2, 19=B2, 20=C3
+; Progression: Em - Cmaj7 - Am7 - B7 (i - VI - iv - V in E minor)
+; Note refs: 0=E1, 5=A1, 7=B1, 8=C2, 12=E2, 17=A2, 19=B2, 20=C3
 BASS_PATTERN:
-        ; Bar 1 (Em): Driving octave pulse
-        !byte 12, $FF, 12, 0    ; E2-rest-E2-E1
-        !byte 12, $FF, 12, 0    ; E2-rest-E2-E1
-        ; Bar 2 (C/G): Harmonic shift
-        !byte 20, $FF, 20, 8    ; C3-rest-C3-C2
-        !byte 15, $FF, 15, 3    ; G2-rest-G2-G1
-        ; Bar 3 (Am): Tension
-        !byte 17, $FF, 17, 5    ; A2-rest-A2-A1
-        !byte 17, $FF, 17, 5    ; A2-rest-A2-A1
-        ; Bar 4 (B->Em): Resolution
-        !byte 19, $FF, 19, 7    ; B2-rest-B2-B1
-        !byte 12, $FF, 12, 0    ; E2-rest-E2-E1
+        ; Bar 1 (Em): pulsing eighth octave pattern - the signature Crockett pulse
+        !byte 12, 0, 12, 0, 12, 0, 12, 0    ; E2-E1 x4
+        ; Bar 2 (Cmaj7): bass walks down to C
+        !byte 20, 8, 20, 8, 20, 8, 20, 8    ; C3-C2 x4
+        ; Bar 3 (Am7): softer pulse on A
+        !byte 17, 5, 17, 5, 17, 5, 17, 5    ; A2-A1 x4
+        ; Bar 4 (B7 -> Em): tension then resolve on last two beats
+        !byte 19, 7, 19, 7, 19, 7, 12, 0    ; B2-B1 x3, last resolves to E
 
-; Lead melody - soaring, sparse, Crockett's Theme vibe
-; Long notes with space between them - less is more
-; 29=A3, 31=B3, 32=C4, 34=D4, 36=E4, 39=G4
+; Lead melody - Crockett's Theme contour: sustained opening, bluesy descent
+; Refs: 29=A3, 31=B3, 32=C4, 34=D4, 36=E4, 37=F4, 38=F#4, 39=G4, 41=A4, 43=B4
 LEAD_PATTERN:
-        ; Bar 1: Atmospheric opening - emerge from silence
-        !byte $FF, $FF, $FF, 36 ; rest-rest-rest-E4
-        !byte $FF, $FF, 39, $FF ; rest-rest-G4-rest
-        ; Bar 2: Descend with space
-        !byte 36, $FF, $FF, 32  ; E4-rest-rest-C4
-        !byte $FF, $FF, $FF, $FF ; rest (let it breathe)
-        ; Bar 3: Second phrase - building
-        !byte $FF, $FF, 29, $FF ; rest-rest-A3-rest
-        !byte 32, $FF, 36, $FF  ; C4-rest-E4-rest
-        ; Bar 4: Climax and resolve
-        !byte 39, $FF, 36, $FF  ; G4-rest-E4-rest
-        !byte 34, $FF, 31, $FF  ; D4-rest-B3-rest
+        ; Bar 1 (Em): THE statement - long sustained B3 (the 5th of Em)
+        !byte 31, $FF, $FF, $FF, $FF, $FF, $FF, $FF  ; B3 held
+        ; Bar 2 (Cmaj7): ease up to E4, linger, drop to D4
+        !byte 36, $FF, $FF, $FF, 39, $FF, 36, $FF    ; E4...G4...E4
+        ; Bar 3 (Am7): soar to A4 apex, then descend the minor pentatonic
+        !byte 41, $FF, $FF, $FF, 39, $FF, 36, $FF    ; A4...G4...E4
+        ; Bar 4 (B7 -> Em): descending line resolves on B3
+        !byte 34, $FF, 32, $FF, 31, $FF, $FF, $FF    ; D4-C4-B3 (held)
 
-; Pad/chord pattern - sustained notes for 80s atmosphere
-; Follows chord progression: Em - C - Am - B/Em
+; Pad/chord pattern - sustained root motion, warms the space
+; Follows progression Em - Cmaj7 - Am7 - B7
 PAD_PATTERN:
-        ; Bar 1 (Em): E3 sustained
-        !byte 24, 24, 24, 24    ; E3
-        !byte 24, 24, 24, 24    ; E3
-        ; Bar 2 (C/G): Shift to C then G
-        !byte 20, 20, 20, 20    ; C3
-        !byte 27, 27, 27, 27    ; G3
-        ; Bar 3 (Am): A sustained
-        !byte 29, 29, 29, 29    ; A3
-        !byte 29, 29, 29, 29    ; A3
-        ; Bar 4 (B->Em): Resolve
-        !byte 19, 19, 19, 19    ; B2
-        !byte 24, 24, 24, 24    ; E3
+        ; Bar 1 (Em): E3 sustained under the held lead
+        !byte 24, 24, 24, 24, 24, 24, 24, 24  ; E3
+        ; Bar 2 (Cmaj7): shift to C3
+        !byte 20, 20, 20, 20, 20, 20, 20, 20  ; C3
+        ; Bar 3 (Am7): A2 root (warmer, slightly lower than existing)
+        !byte 17, 17, 17, 17, 17, 17, 17, 17  ; A2
+        ; Bar 4 (B7 -> Em): B2 then resolves to E3 on last two beats
+        !byte 19, 19, 19, 19, 19, 19, 24, 24  ; B2 x6, E3 x2
 
-; Arpeggio pattern - broken chord shimmer between beats
-; Follows chord changes for harmonic richness
+; Arpeggio pattern - broken chord shimmer on voice 3's offbeat slot
+; One arp note per step (32 steps = 32 shimmer hits per bar group)
 ARP_PATTERN:
-        !byte 36, 39, 43, 39    ; Em: E4-G4-B4-G4
-        !byte 36, 39, 43, 39    ; Em: E4-G4-B4-G4
-        !byte 32, 36, 39, 36    ; C:  C4-E4-G4-E4
-        !byte 27, 31, 39, 31    ; G:  G3-B3-G4-B3
-        !byte 29, 32, 36, 32    ; Am: A3-C4-E4-C4
-        !byte 29, 32, 36, 32    ; Am: A3-C4-E4-C4
-        !byte 31, 36, 43, 36    ; B:  B3-E4-B4-E4
-        !byte 36, 39, 43, 39    ; Em: E4-G4-B4-G4
+        ; Bar 1 (Em): E-G-B-G ascending then back
+        !byte 36, 39, 43, 39, 36, 39, 43, 39   ; E4-G4-B4-G4 x2
+        ; Bar 2 (Cmaj7): C-E-G-B (maj7 color tone)
+        !byte 32, 36, 39, 43, 32, 36, 39, 43   ; C4-E4-G4-B4 x2
+        ; Bar 3 (Am7): A-C-E-G (minor7 shimmer)
+        !byte 29, 32, 36, 39, 29, 32, 36, 39   ; A3-C4-E4-G4 x2
+        ; Bar 4 (B7): B-D#-F#-A then back to Em color
+        !byte 31, 35, 38, 41, 38, 35, 36, 39   ; B3-D#4-F#4-A4-F#4-D#4-E4-G4
 
 ; ============================================================================
 ; SAD MUSIC PATTERNS - Game Over
@@ -5013,6 +5000,211 @@ CLEAR_GAMEPLAY_BITMAP:
         sta GAMEPLAY_SCREEN + $3FA
         lda #(GAMEPLAY_SPRITES - $4000) / 64 + 3
         sta GAMEPLAY_SCREEN + $3FB
+        rts
+
+; ============================================================================
+; INIT LEVEL WITH BACKGROUND CHECK
+; ============================================================================
+; Wrapper around INIT_LEVEL that adds level 2 background overlay
+
+INIT_LEVEL_BG:
+        jsr INIT_LEVEL
+        lda LEVEL
+        cmp #2
+        bne @done
+        jsr OVERLAY_LEVEL2_BG
+@done:  rts
+
+; ============================================================================
+; OVERLAY LEVEL 2 BACKGROUND
+; ============================================================================
+; Copies background image into the playfield interior cells only
+; (rows FIELD_TOP+1 to FIELD_BOTTOM-1, cols FIELD_LEFT+1 to FIELD_RIGHT-1)
+; Called AFTER DRAW_PLAYFIELD and DRAW_HUD so borders and HUD are preserved
+;
+; Uses TEMP1-TEMP4 and SCREEN_LO/HI, COLOR_LO/HI as working storage
+; Row/col counters stored in unused RAM at $C300/$C301 (safe area)
+
+BG_ROW = $C300
+BG_COL = $C301
+
+OVERLAY_LEVEL2_BG:
+        ; Bank out BASIC ROM so we can read data in $A000-$BFFF region
+        sei
+        lda $01
+        pha
+        and #%11111110          ; Clear bit 0 = bank out BASIC ROM
+        sta $01
+
+        lda #FIELD_TOP + 1
+        sta BG_ROW
+
+@row_loop:
+        lda #FIELD_LEFT + 1
+        sta BG_COL
+
+@col_loop:
+        ; Calculate source offset in LEVEL2_BITMAP: (row * 40 + col) * 8
+        ; and dest offset in GAMEPLAY_BITMAP: same offset
+        ; Both bitmaps use standard layout, so offset is identical
+
+        ; Compute row * 40: row * 32 + row * 8
+        lda BG_ROW
+        asl
+        asl
+        asl                     ; A = row * 8 (low byte)
+        sta SCREEN_LO
+        lda #0
+        sta SCREEN_HI
+        lda BG_ROW
+        asl
+        asl
+        asl
+        asl
+        asl                     ; A = row * 32 (low byte)
+        clc
+        adc SCREEN_LO           ; A = row*32 + row*8 = row*40 (low)
+        sta SCREEN_LO
+        ; Capture carry from add before lsr destroys it
+        lda #0
+        adc #0                  ; A = carry from low byte addition
+        sta SCREEN_HI
+        lda BG_ROW
+        lsr
+        lsr
+        lsr                     ; A = row >> 3 (high byte from row*32)
+        clc
+        adc SCREEN_HI
+        sta SCREEN_HI
+
+        ; Add column
+        lda BG_COL
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++
+        ; Multiply by 8 to get byte offset: (row*40+col) * 8
+        asl SCREEN_LO
+        rol SCREEN_HI
+        asl SCREEN_LO
+        rol SCREEN_HI
+        asl SCREEN_LO
+        rol SCREEN_HI
+
+        ; SCREEN_LO/HI now has the byte offset from start of bitmap
+        ; Source = LEVEL2_BITMAP + offset
+        lda SCREEN_LO
+        clc
+        adc #<LEVEL2_BITMAP
+        sta TEMP1               ; source low
+        lda SCREEN_HI
+        adc #>LEVEL2_BITMAP
+        sta TEMP2               ; source high
+
+        ; Dest = GAMEPLAY_BITMAP + offset
+        lda SCREEN_LO
+        clc
+        adc #<GAMEPLAY_BITMAP
+        sta TEMP3               ; dest low
+        lda SCREEN_HI
+        adc #>GAMEPLAY_BITMAP
+        sta TEMP4               ; dest high
+
+        ; Copy source pointer to zero page for indirect addressing
+        lda TEMP1
+        sta SCREEN_LO
+        lda TEMP2
+        sta SCREEN_HI
+        lda TEMP3
+        sta COLOR_LO
+        lda TEMP4
+        sta COLOR_HI
+
+        ; Copy 8 bytes (one character cell)
+        ldy #0
+-       lda (SCREEN_LO), y
+        sta (COLOR_LO), y
+        iny
+        cpy #8
+        bne -
+
+        ; Also set screen color for this cell
+        ; GAMEPLAY_SCREEN + row * 40 + col
+        ldx BG_COL
+        ldy BG_ROW
+        ; Read source screen color from LEVEL2_SCREEN + row*40+col
+        tya                     ; A = row
+        asl
+        asl
+        asl                     ; row * 8
+        sta SCREEN_LO
+        lda #0
+        sta SCREEN_HI
+        tya                     ; A = row
+        asl
+        asl
+        asl
+        asl
+        asl                     ; row * 32
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        ; Capture carry before lsr destroys it
+        lda #0
+        adc #0
+        sta SCREEN_HI
+        tya
+        lsr
+        lsr
+        lsr                     ; row >> 3
+        clc
+        adc SCREEN_HI
+        sta SCREEN_HI
+        txa                     ; A = col
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++
+        ; Read color from LEVEL2_SCREEN
+        lda SCREEN_LO
+        clc
+        adc #<LEVEL2_SCREEN
+        sta SCREEN_LO
+        lda SCREEN_HI
+        adc #>LEVEL2_SCREEN
+        sta SCREEN_HI
+        ldy #0
+        lda (SCREEN_LO), y     ; A = color byte
+
+        ; Write to GAMEPLAY_SCREEN using SET_BITMAP_COLOR
+        ldx BG_COL
+        ldy BG_ROW
+        jsr SET_BITMAP_COLOR
+
+        ; Next column
+        inc BG_COL
+        lda BG_COL
+        cmp #FIELD_RIGHT
+        beq @col_done
+        jmp @col_loop
+@col_done:
+
+        ; Next row
+        inc BG_ROW
+        lda BG_ROW
+        cmp #FIELD_BOTTOM
+        beq @row_done
+        jmp @row_loop
+@row_done:
+
+        ; Restore processor port
+        pla
+        sta $01
+        cli
         rts
 
 ; Copy sprite data from Bank 0 ($2800) to Bank 1 ($6400)
@@ -5983,6 +6175,12 @@ DRAW_LINE:
 ; ============================================================================
 
 !source "title_data.asm"
+
+; ============================================================================
+; LEVEL 2 BACKGROUND BITMAP DATA
+; ============================================================================
+
+!source "level2_bg.asm"
 
 ; ============================================================================
 ; END
