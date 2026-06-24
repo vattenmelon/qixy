@@ -5008,12 +5008,22 @@ CLEAR_GAMEPLAY_BITMAP:
 ; Wrapper around INIT_LEVEL that adds level 2 background overlay
 
 INIT_LEVEL_BG:
-        jsr INIT_LEVEL
         lda LEVEL
         cmp #2
-        bne @done
+        beq @lvl2
+        ; Any non-level-2 level: fully wipe the gameplay bitmap AND its colour
+        ; RAM before drawing. DRAW_PLAYFIELD's CLEAR_BITMAP_CELL only zeroes the
+        ; 8 bitmap bytes per cell; it does NOT touch colour RAM, so the non-black
+        ; hires background nibbles written by a previous level's OVERLAY_LEVEL2_BG
+        ; would otherwise stay visible (e.g. level 2's background bleeding into
+        ; level 3). CLEAR_GAMEPLAY_BITMAP resets both, then we draw fresh.
+        jsr CLEAR_GAMEPLAY_BITMAP
+        jsr INIT_LEVEL
+        rts
+@lvl2:
+        jsr INIT_LEVEL
         jsr OVERLAY_LEVEL2_BG
-@done:  rts
+        rts
 
 ; ============================================================================
 ; OVERLAY LEVEL 2 BACKGROUND
