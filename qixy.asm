@@ -4753,53 +4753,61 @@ NOTE_FREQ_HI:
         ; Octave 4
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
-; Bass pattern - driving octave pulse, Crockett's Theme style
-; Progression: Em - Cmaj7 - Am7 - B7 (i - VI - iv - V in E minor)
-; Note refs: 0=E1, 5=A1, 7=B1, 8=C2, 12=E2, 17=A2, 19=B2, 20=C3
+; ----------------------------------------------------------------------------
+; "Night Drive" - original Miami Vice / Crockett's Theme-style homage.
+; NOT a transcription of Jan Hammer's copyrighted melody; this is an original
+; line written in the same synthwave idiom (slow octave-pulse bass, sustained
+; soaring lead, shimmering arpeggio) over the classic minor i-VI-iv-V cycle.
+; Progression: Em - Cmaj7 - Am7 - B7 (i - VI - iv - V in E minor), 4 bars.
+; All melodic notes are drawn from the E natural-minor scale (E F# G A B C D).
+; ----------------------------------------------------------------------------
+
+; Bass pattern - driving octave pulse, the engine of the groove.
+; Note refs: 0=E1, 6=A#1, 7=B1, 8=C2, 12=E2, 17=A2, 18=A#2, 19=B2, 20=C3
 BASS_PATTERN:
-        ; Bar 1 (Em): pulsing eighth octave pattern - the signature Crockett pulse
+        ; Bar 1 (Em): the signature steady octave pulse on the tonic
         !byte 12, 0, 12, 0, 12, 0, 12, 0    ; E2-E1 x4
-        ; Bar 2 (Cmaj7): bass walks down to C
-        !byte 20, 8, 20, 8, 20, 8, 20, 8    ; C3-C2 x4
-        ; Bar 3 (Am7): softer pulse on A
+        ; Bar 2 (Cmaj7): lift to C, last beat steps up to B as a leading tone
+        !byte 20, 8, 20, 8, 20, 8, 19, 7    ; C3-C2 x3, B2-B1 approach
+        ; Bar 3 (Am7): warm pulse on A
         !byte 17, 5, 17, 5, 17, 5, 17, 5    ; A2-A1 x4
-        ; Bar 4 (B7 -> Em): tension then resolve on last two beats
-        !byte 19, 7, 19, 7, 19, 7, 12, 0    ; B2-B1 x3, last resolves to E
+        ; Bar 4 (B7 -> Em): B7 tension, chromatic A# slide, resolve to E
+        !byte 19, 7, 19, 7, 18, 6, 12, 0    ; B2-B1 x2, A#2-A#1, E2-E1
 
-; Lead melody - Crockett's Theme contour: sustained opening, bluesy descent
-; Refs: 29=A3, 31=B3, 32=C4, 34=D4, 36=E4, 37=F4, 38=F#4, 39=G4, 41=A4, 43=B4
+; Lead melody - sustained, soaring synth line. $FF = hold previous note (legato).
+; A rising arch peaks at B4 in bar 2, then steps back down to the tonic by bar 4.
+; Refs: 31=B3, 34=D4, 36=E4, 38=F#4, 39=G4, 41=A4, 43=B4
 LEAD_PATTERN:
-        ; Bar 1 (Em): THE statement - long sustained B3 (the 5th of Em)
-        !byte 31, $FF, $FF, $FF, $FF, $FF, $FF, $FF  ; B3 held
-        ; Bar 2 (Cmaj7): ease up to E4, linger, drop to D4
-        !byte 36, $FF, $FF, $FF, 39, $FF, 36, $FF    ; E4...G4...E4
-        ; Bar 3 (Am7): soar to A4 apex, then descend the minor pentatonic
-        !byte 41, $FF, $FF, $FF, 39, $FF, 36, $FF    ; A4...G4...E4
-        ; Bar 4 (B7 -> Em): descending line resolves on B3
-        !byte 34, $FF, 32, $FF, 31, $FF, $FF, $FF    ; D4-C4-B3 (held)
+        ; Bar 1 (Em): patient statement - E4 swells, then climbs to G4
+        !byte 36, $FF, $FF, $FF, 39, $FF, $FF, $FF  ; E4 held -> G4 held
+        ; Bar 2 (Cmaj7): reach the B4 apex, ease back down A4 - G4
+        !byte 43, $FF, $FF, $FF, 41, $FF, 39, $FF   ; B4 held -> A4 -> G4
+        ; Bar 3 (Am7): settle on E4, lift again through F#4 - G4
+        !byte 36, $FF, $FF, $FF, 38, $FF, 39, $FF   ; E4 held -> F#4 -> G4
+        ; Bar 4 (B7 -> Em): stepwise descent resolves onto the tonic E4
+        !byte 41, $FF, 39, $FF, 38, $FF, 36, $FF    ; A4-G4-F#4-E4 resolve
 
-; Pad/chord pattern - sustained root motion, warms the space
-; Follows progression Em - Cmaj7 - Am7 - B7
+; Pad/chord pattern - sustained root motion, warm triangle bed under the lead.
 PAD_PATTERN:
-        ; Bar 1 (Em): E3 sustained under the held lead
+        ; Bar 1 (Em): E3 sustained
         !byte 24, 24, 24, 24, 24, 24, 24, 24  ; E3
         ; Bar 2 (Cmaj7): shift to C3
         !byte 20, 20, 20, 20, 20, 20, 20, 20  ; C3
-        ; Bar 3 (Am7): A2 root (warmer, slightly lower than existing)
+        ; Bar 3 (Am7): drop to A2 root
         !byte 17, 17, 17, 17, 17, 17, 17, 17  ; A2
         ; Bar 4 (B7 -> Em): B2 then resolves to E3 on last two beats
         !byte 19, 19, 19, 19, 19, 19, 24, 24  ; B2 x6, E3 x2
 
-; Arpeggio pattern - broken chord shimmer on voice 3's offbeat slot
-; One arp note per step (32 steps = 32 shimmer hits per bar group)
+; Arpeggio pattern - broken-chord shimmer on voice 3's offbeat slot.
+; One arp note per step; traces each bar's chord tones for that 80s sparkle.
 ARP_PATTERN:
-        ; Bar 1 (Em): E-G-B-G ascending then back
+        ; Bar 1 (Em): E-G-B-G
         !byte 36, 39, 43, 39, 36, 39, 43, 39   ; E4-G4-B4-G4 x2
-        ; Bar 2 (Cmaj7): C-E-G-B (maj7 color tone)
+        ; Bar 2 (Cmaj7): C-E-G-B
         !byte 32, 36, 39, 43, 32, 36, 39, 43   ; C4-E4-G4-B4 x2
-        ; Bar 3 (Am7): A-C-E-G (minor7 shimmer)
+        ; Bar 3 (Am7): A-C-E-G
         !byte 29, 32, 36, 39, 29, 32, 36, 39   ; A3-C4-E4-G4 x2
-        ; Bar 4 (B7): B-D#-F#-A then back to Em color
+        ; Bar 4 (B7): B-D#-F#-A then ease back toward Em color
         !byte 31, 35, 38, 41, 38, 35, 36, 39   ; B3-D#4-F#4-A4-F#4-D#4-E4-G4
 
 ; ============================================================================
