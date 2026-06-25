@@ -151,6 +151,19 @@ PREV_PERCENT    = $64       ; Percentage before current claim (for extra life ch
 ; Qix speed control (not in zero page to avoid KERNAL/BASIC conflicts)
 QIX_SPEED       = $C5F0     ; Frame divisor for Qix movement (higher = slower)
 
+; Second Qix (level 6+): free-flying triangle that ricochets off the borders.
+; Position is 16-bit fixed point (high byte = tile, low byte = 1/256 fraction)
+; so it can travel at an arbitrary angle and bounce naturally. Velocity is a
+; signed byte per axis in 1/256-tile-per-frame units. Stored in free RAM just
+; above QIX_SPEED ($C5F0) and below HISCORE_TABLE ($C600).
+QIX2_ACTIVE     = $C5F1     ; 1 = second Qix in play (level 6 and up)
+QIX2_X_LO       = $C5F2     ; X fraction
+QIX2_X_HI       = $C5F3     ; X tile column
+QIX2_Y_LO       = $C5F4     ; Y fraction
+QIX2_Y_HI       = $C5F5     ; Y tile row
+QIX2_DX         = $C5F6     ; signed X velocity (1/256 tile/frame)
+QIX2_DY         = $C5F7     ; signed Y velocity (1/256 tile/frame)
+
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
 FILL_QIX_Y      = $40       ; Qix Y when fill started
@@ -371,6 +384,9 @@ MAIN_LOOP:
         jmp MAIN_LOOP
 
 @not_paused:
+        ; Cheat: C key instantly completes the current level
+        jsr CHECK_CHEAT_KEY
+
         ; Process fill incrementally if active (small work per frame)
         lda FILL_STATE
         beq @no_fill
@@ -380,6 +396,7 @@ MAIN_LOOP:
         jsr READ_JOYSTICK
         jsr UPDATE_PLAYER
         jsr UPDATE_QIX
+        jsr UPDATE_QIX2
         jsr UPDATE_SPARX
         ; Decrement grace timer if active
         lda GRACE_TIMER
@@ -421,6 +438,45 @@ WAIT_FRAME:
 
 ; Previous P key state for edge detection
 PREV_P_KEY      !byte 0
+
+; Previous C (cheat) key state for edge detection
+PREV_CHEAT_KEY  !byte 0
+
+; ----------------------------------------------------------------------------
+; CHEAT KEY: press C to instantly clear the current level
+; C is at keyboard row 2 (select $FB), column 4 (bit $10)
+; ----------------------------------------------------------------------------
+CHECK_CHEAT_KEY:
+        lda #$FB                ; Select keyboard row 2
+        sta CIA1_PORTA
+        lda CIA1_PORTB          ; Read columns
+        and #$10                ; Check column 4 (C key)
+        bne @not_pressed
+
+        ; C is pressed - edge detect so one press = one level
+        lda PREV_CHEAT_KEY
+        bne @done               ; Already held, ignore
+        lda #1
+        sta PREV_CHEAT_KEY
+
+        ; Trigger level complete (same path as reaching the target percent).
+        ; UPDATE_LEVEL_DONE re-inits the level, which resets PERCENT_CLAIMED.
+        lda #0
+        sta FILL_STATE          ; Abort any in-progress fill
+        lda #3                  ; GAME_STATE = level complete
+        sta GAME_STATE
+        lda #120                ; Level-done animation timer
+        sta DEATH_TIMER
+        jmp @done
+
+@not_pressed:
+        lda #0
+        sta PREV_CHEAT_KEY
+
+@done:
+        lda #$FF                ; Restore CIA for joystick reading
+        sta CIA1_PORTA
+        rts
 
 CHECK_PAUSE_KEY:
         ; Read keyboard row for P key
@@ -978,6 +1034,9 @@ INIT_LEVEL:
         sta QIX_DY
         lda #60
         sta QIX_TIMER
+
+        ; Second Qix (triangle) - set up / enable for level 6+, disable otherwise
+        jsr INIT_QIX2
 
         ; Sparx on borders
         lda #FIELD_LEFT
@@ -2857,6 +2916,29 @@ CHECK_COLLISIONS:
         lda PLAYER_DRAWING
         beq @done
 
+        ; Player vs second Qix (triangle) - lethal on contact, level 6+ only.
+        ; QIX2 uses fixed-point coords; its tile is the high byte.
+        lda QIX2_ACTIVE
+        beq @no_q2
+        lda PLAYER_X
+        sec
+        sbc QIX2_X_HI
+        bcs @q2_px
+        eor #$FF
+        adc #1
+@q2_px: cmp #2
+        bcs @no_q2
+        lda PLAYER_Y
+        sec
+        sbc QIX2_Y_HI
+        bcs @q2_py
+        eor #$FF
+        adc #1
+@q2_py: cmp #2
+        bcs @no_q2
+        jmp PLAYER_DEATH
+@no_q2:
+
         lda PLAYER_X
         sec
         sbc QIX_X
@@ -3081,6 +3163,9 @@ UPDATE_SPRITES:
         clc
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y3
+
+        ; Second Qix sprite (sprite 4) - position, MSB and green/white flash
+        jsr DRAW_QIX2_SPRITE
 
         ; Player color: grace period blink (yellow/red)
         lda GRACE_TIMER
@@ -4477,6 +4562,16 @@ INIT_MUSIC:
 
         rts
 
+; ----------------------------------------------------------------------------
+; RELOCATION: the main code block grows up from $0810 and must end below $2000
+; (INIT_CHARSET fills the gameplay charset at $2000-$2447 at runtime and would
+; clobber any code placed there). Everything from UPDATE_MUSIC onwards is moved
+; into the unused upper charset region ($2460-$27FF) - VIC bank 0 RAM that
+; INIT_CHARSET never touches - so the gameplay code below stays under $2000.
+; All of these are reached via JSR/JMP by label, so their absolute location
+; does not matter. Keep the running total below SPRITE_RAM ($2800).
+* = $2460
+
 UPDATE_MUSIC:
         lda MUSIC_ENABLED
         bne @enabled
@@ -4586,17 +4681,6 @@ UPDATE_MUSIC:
 
 @done:
         rts
-
-; ----------------------------------------------------------------------------
-; RELOCATION: the routines below had grown past $2000 into CHARSET_RAM
-; ($2000-$27FF), so INIT_CHARSET overwrote their machine code at runtime -
-; calling them (e.g. INIT_SAD_MUSIC on game over) executed character bitmap
-; data as instructions and crashed, leaving the death-explosion noise ringing
-; (the "static" with no sad music). INIT_CHARSET only fills chars 0-136
-; ($2000-$245F), so place these routines in the unused upper charset region
-; at $2500 - still VIC bank 0 RAM, never written, and within the existing
-; file gap (no file-size growth). Normal music (below $2000) was unaffected.
-* = $2500
 
 ; === SAD MUSIC UPDATE ===
 ; Slower tempo, softer waveforms, melancholic patterns
@@ -4754,6 +4838,249 @@ INIT_SAD_MUSIC:
         sta SID_VOLUME
 
         rts
+
+; ============================================================================
+; UPDATE SECOND QIX (level 6+)
+; ============================================================================
+; A triangle that flies in a straight line and ricochets off the playfield
+; borders. Position is 16-bit fixed point per axis (high byte = tile, low byte
+; = 1/256 fraction); velocity is a signed byte per axis. Reflecting an axis is
+; just negating that axis' velocity, which gives a natural bounce.
+; Placed here in the upper charset region ($2500+, never touched by
+; INIT_CHARSET) so it does not push the main code block past $2000.
+UPDATE_QIX2:
+        lda QIX2_ACTIVE
+        bne +
+        rts
++
+        ; Move one axis at a time, testing the DESTINATION tile before entering
+        ; it. The Qix may only occupy empty/unclaimed tiles, so it bounces off
+        ; the border, drawn trails/corners AND claimed territory. Axis-separated
+        ; testing gives a natural reflection off horizontal vs vertical lines.
+
+        ; --- X axis: candidate newX = X + DX (sign-extended) into TEMP2/TEMP3 ---
+        ldx #$00
+        lda QIX2_DX
+        bpl @x_pos
+        ldx #$FF                ; negative velocity -> high byte $FF
+@x_pos:
+        clc
+        adc QIX2_X_LO
+        sta TEMP2               ; candidate X_LO
+        txa
+        adc QIX2_X_HI
+        sta TEMP3               ; candidate X_HI (column)
+
+        ldx TEMP3
+        ldy QIX2_Y_HI
+        jsr QIX2_TILE_SOLID
+        bcs @bounce_x
+        ; passable -> commit the X move
+        lda TEMP2
+        sta QIX2_X_LO
+        lda TEMP3
+        sta QIX2_X_HI
+        jmp @y_axis
+@bounce_x:
+        ; blocked -> reverse X velocity, stay put (never enter the line)
+        lda QIX2_DX
+        eor #$FF
+        clc
+        adc #1
+        sta QIX2_DX
+
+@y_axis:
+        ; --- Y axis: candidate newY = Y + DY (sign-extended) ---
+        ldx #$00
+        lda QIX2_DY
+        bpl @y_pos
+        ldx #$FF
+@y_pos:
+        clc
+        adc QIX2_Y_LO
+        sta TEMP2               ; candidate Y_LO
+        txa
+        adc QIX2_Y_HI
+        sta TEMP3               ; candidate Y_HI (row)
+
+        ldx QIX2_X_HI
+        ldy TEMP3
+        jsr QIX2_TILE_SOLID
+        bcs @bounce_y
+        lda TEMP2
+        sta QIX2_Y_LO
+        lda TEMP3
+        sta QIX2_Y_HI
+        rts
+@bounce_y:
+        lda QIX2_DY
+        eor #$FF
+        clc
+        adc #1
+        sta QIX2_DY
+        rts
+
+; Is the tile at column X, row Y solid (blocked) for the second Qix?
+; Passable = empty/unclaimed (CHAR_EMPTY) or the fill-phase "marked empty" ($20).
+; Everything else (border, trails, corners, claimed) blocks. GET_TILE preserves
+; X and Y; returns carry SET if solid, carry CLEAR if passable.
+QIX2_TILE_SOLID:
+        jsr GET_TILE
+        cmp #CHAR_EMPTY
+        beq @free
+        cmp #$20
+        beq @free
+        sec
+        rts
+@free:
+        clc
+        rts
+
+; ============================================================================
+; INIT SECOND QIX (called from INIT_LEVEL each level)
+; ============================================================================
+; Installs the triangle sprite shape + pointer (cheap, done every level), then
+; either activates the second Qix in the centre with a random launch angle
+; (level 6+) or disables sprite 4 (earlier levels).
+INIT_QIX2:
+        ; Gameplay runs in VIC Bank 1 ($4000-$7FFF): sprite data lives at
+        ; GAMEPLAY_SPRITES ($6400) and pointers in the bitmap screen at
+        ; GAMEPLAY_SCREEN+$3F8 ($63F8). COPY_SPRITES_TO_BANK1 only installs
+        ; sprites 0-3, so we install sprite 4 (the triangle) here in bank 1.
+        ; Copy the 63-byte triangle bitmap into sprite-4 data (slot 4 = $6500)
+        ldx #62
+@cp_tri:
+        lda QIX2_SPRITE_DATA, x
+        sta GAMEPLAY_SPRITES + 256, x
+        dex
+        bpl @cp_tri
+        ; Sprite 4 pointer (block 148 = ($6400-$4000)/64 + 4)
+        lda #(GAMEPLAY_SPRITES - $4000) / 64 + 4
+        sta GAMEPLAY_SCREEN + $3FC
+
+        ; Only active from level 6 onwards
+        lda LEVEL
+        cmp #6
+        bcc @off
+
+        lda #1
+        sta QIX2_ACTIVE
+        ; Centre of the playfield (fixed-point: fraction = 0)
+        lda #20
+        sta QIX2_X_HI
+        lda #13
+        sta QIX2_Y_HI
+        lda #0
+        sta QIX2_X_LO
+        sta QIX2_Y_LO
+
+        ; Random X velocity: magnitude $18..$47, random sign. Never zero, so the
+        ; launch angle is always a genuine diagonal rather than axis-aligned.
+        jsr RANDOM
+        and #$2F
+        clc
+        adc #$18
+        sta QIX2_DX
+        jsr RANDOM
+        and #$01
+        beq @dxp
+        lda QIX2_DX
+        eor #$FF
+        clc
+        adc #1
+        sta QIX2_DX
+@dxp:
+        ; Random Y velocity, same scheme
+        jsr RANDOM
+        and #$2F
+        clc
+        adc #$18
+        sta QIX2_DY
+        jsr RANDOM
+        and #$01
+        beq @dyp
+        lda QIX2_DY
+        eor #$FF
+        clc
+        adc #1
+        sta QIX2_DY
+@dyp:
+        ; Enable sprite 4
+        lda VIC_SPRITE_EN
+        ora #$10
+        sta VIC_SPRITE_EN
+        rts
+
+@off:
+        lda #0
+        sta QIX2_ACTIVE
+        lda VIC_SPRITE_EN
+        and #$EF                ; disable sprite 4
+        sta VIC_SPRITE_EN
+        rts
+
+; ============================================================================
+; DRAW SECOND QIX SPRITE (called from UPDATE_SPRITES)
+; ============================================================================
+; Positions sprite 4 from QIX2 fixed-point tile coords and flashes it between
+; green and white. MSB register was already cleared and partially set by the
+; caller, so we only OR in sprite-4's bit. No-op when inactive (sprite is off).
+DRAW_QIX2_SPRITE:
+        lda QIX2_ACTIVE
+        bne +
+        rts
++
+        lda QIX2_X_HI
+        jsr CALC_SPRITE_X
+        sta VIC_SPRITE_X0 + 8       ; sprite 4 X = $D008
+        bcc @no_msb
+        lda VIC_SPRITE_MSB
+        ora #$10
+        sta VIC_SPRITE_MSB
+@no_msb:
+        lda QIX2_Y_HI
+        asl
+        asl
+        asl
+        clc
+        adc #50                     ; Standard C64 Y offset
+        sta VIC_SPRITE_Y0 + 8       ; sprite 4 Y = $D009
+        ; Flash between green and white (toggles every 8 frames)
+        lda FRAME_COUNT
+        and #$08
+        beq @green
+        lda #COL_WHITE
+        jmp @setcol
+@green:
+        lda #COL_GREEN
+@setcol:
+        sta VIC_SPRITE_COL + 4      ; sprite 4 color = $D02B
+        rts
+
+; Triangle sprite bitmap for the second Qix (sprite 4) - 21 rows x 3 bytes,
+; an upward-pointing solid triangle.
+QIX2_SPRITE_DATA:
+        !byte $00,$18,$00
+        !byte $00,$18,$00
+        !byte $00,$3C,$00
+        !byte $00,$3C,$00
+        !byte $00,$7E,$00
+        !byte $00,$7E,$00
+        !byte $00,$FF,$00
+        !byte $01,$FF,$80
+        !byte $01,$FF,$80
+        !byte $03,$FF,$C0
+        !byte $03,$FF,$C0
+        !byte $07,$FF,$E0
+        !byte $07,$FF,$E0
+        !byte $0F,$FF,$F0
+        !byte $0F,$FF,$F0
+        !byte $1F,$FF,$F8
+        !byte $1F,$FF,$F8
+        !byte $3F,$FF,$FC
+        !byte $3F,$FF,$FC
+        !byte $7F,$FF,$FE
+        !byte $FF,$FF,$FF
 
 ; ============================================================================
 ; NOTE FREQUENCY TABLE - PAL C64 (985248 Hz)
