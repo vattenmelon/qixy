@@ -4911,14 +4911,14 @@ UPDATE_QIX2:
         sta QIX2_Y_LO
         lda TEMP3
         sta QIX2_Y_HI
-        rts
+        jmp QIX2_SET_ORIENTATION     ; re-point triangle along heading, then rts
 @bounce_y:
         lda QIX2_DY
         eor #$FF
         clc
         adc #1
         sta QIX2_DY
-        rts
+        jmp QIX2_SET_ORIENTATION     ; heading changed on bounce -> re-point
 
 ; Is the tile at column X, row Y solid (blocked) for the second Qix?
 ; Passable = empty/unclaimed (CHAR_EMPTY) or the fill-phase "marked empty" ($20).
@@ -4943,20 +4943,10 @@ QIX2_TILE_SOLID:
 ; either activates the second Qix in the centre with a random launch angle
 ; (level 6+) or disables sprite 4 (earlier levels).
 INIT_QIX2:
-        ; Gameplay runs in VIC Bank 1 ($4000-$7FFF): sprite data lives at
-        ; GAMEPLAY_SPRITES ($6400) and pointers in the bitmap screen at
-        ; GAMEPLAY_SCREEN+$3F8 ($63F8). COPY_SPRITES_TO_BANK1 only installs
-        ; sprites 0-3, so we install sprite 4 (the triangle) here in bank 1.
-        ; Copy the 63-byte triangle bitmap into sprite-4 data (slot 4 = $6500)
-        ldx #62
-@cp_tri:
-        lda QIX2_SPRITE_DATA, x
-        sta GAMEPLAY_SPRITES + 256, x
-        dex
-        bpl @cp_tri
-        ; Sprite 4 pointer (block 148 = ($6400-$4000)/64 + 4)
-        lda #(GAMEPLAY_SPRITES - $4000) / 64 + 4
-        sta GAMEPLAY_SCREEN + $3FC
+        ; Gameplay runs in VIC Bank 1 ($4000-$7FFF). The 8 directional triangle
+        ; sprites (slots 148-155, $6500-$66FF) are installed once by
+        ; COPY_SPRITES_TO_BANK1; the live sprite-4 pointer at GAMEPLAY_SCREEN+$3FC
+        ; selects the one matching the current heading (QIX2_SET_ORIENTATION).
 
         ; Only active from level 6 onwards
         lda LEVEL
@@ -5005,6 +4995,8 @@ INIT_QIX2:
         adc #1
         sta QIX2_DY
 @dyp:
+        ; Point the triangle along its launch heading
+        jsr QIX2_SET_ORIENTATION
         ; Enable sprite 4
         lda VIC_SPRITE_EN
         ora #$10
@@ -5056,31 +5048,6 @@ DRAW_QIX2_SPRITE:
 @setcol:
         sta VIC_SPRITE_COL + 4      ; sprite 4 color = $D02B
         rts
-
-; Triangle sprite bitmap for the second Qix (sprite 4) - 21 rows x 3 bytes,
-; an upward-pointing solid triangle.
-QIX2_SPRITE_DATA:
-        !byte $00,$18,$00
-        !byte $00,$18,$00
-        !byte $00,$3C,$00
-        !byte $00,$3C,$00
-        !byte $00,$7E,$00
-        !byte $00,$7E,$00
-        !byte $00,$FF,$00
-        !byte $01,$FF,$80
-        !byte $01,$FF,$80
-        !byte $03,$FF,$C0
-        !byte $03,$FF,$C0
-        !byte $07,$FF,$E0
-        !byte $07,$FF,$E0
-        !byte $0F,$FF,$F0
-        !byte $0F,$FF,$F0
-        !byte $1F,$FF,$F8
-        !byte $1F,$FF,$F8
-        !byte $3F,$FF,$FC
-        !byte $3F,$FF,$FC
-        !byte $7F,$FF,$FE
-        !byte $FF,$FF,$FF
 
 ; ============================================================================
 ; NOTE FREQUENCY TABLE - PAL C64 (985248 Hz)
@@ -5645,6 +5612,74 @@ COPY_SPRITES_TO_BANK1:
         bne @copy
         lda #%00001111
         sta VIC_SPRITE_EN
+
+        ; Install the 8 directional triangle sprites for the second Qix into
+        ; bank-1 slots 148-155 ($6500-$66FF). 512 bytes = two interleaved pages.
+        ldx #0
+@cpdir: lda QIX2_SPRITE_DIRS, x
+        sta GAMEPLAY_SPRITES + 256, x
+        lda QIX2_SPRITE_DIRS + 256, x
+        sta GAMEPLAY_SPRITES + 512, x
+        inx
+        bne @cpdir
+        rts
+
+; Pick the triangle facing the current heading and point sprite 4 at it.
+; Direction from signed (QIX2_DX, QIX2_DY); 8-way octant split (~26.5 deg).
+; Slot index 0=E 1=SE 2=S 3=SW 4=W 5=NW 6=N 7=NE -> pointer = base + index.
+QIX2_SET_ORIENTATION:
+        lda QIX2_DX             ; adx = |DX|
+        bpl @ax
+        eor #$FF
+        clc
+        adc #1
+@ax:    sta TEMP1
+        lda QIX2_DY             ; ady = |DY|
+        bpl @ay
+        eor #$FF
+        clc
+        adc #1
+@ay:    sta TEMP2
+
+        lda TEMP2
+        asl                     ; 2*ady
+        cmp TEMP1
+        bcc @horiz              ; 2*ady < adx -> horizontal
+        lda TEMP1
+        asl                     ; 2*adx
+        cmp TEMP2
+        bcc @vert               ; 2*adx < ady -> vertical
+
+        ; --- diagonal ---
+        lda QIX2_DX
+        bmi @dleft
+        ldx #7                  ; DX>0: NE
+        lda QIX2_DY
+        bmi @set
+        ldx #1                  ; SE
+        bpl @set
+@dleft:
+        ldx #5                  ; DX<0: NW
+        lda QIX2_DY
+        bmi @set
+        ldx #3                  ; SW
+        bpl @set
+@horiz:
+        ldx #0                  ; E
+        lda QIX2_DX
+        bpl @set
+        ldx #4                  ; W
+        bpl @set
+@vert:
+        ldx #6                  ; N
+        lda QIX2_DY
+        bmi @set
+        ldx #2                  ; S
+@set:
+        txa
+        clc
+        adc #(GAMEPLAY_SPRITES - $4000) / 64 + 4   ; base slot 148
+        sta GAMEPLAY_SCREEN + $3FC
         rts
 
 ; Bitmap row address lookup table (25 rows)
@@ -6591,6 +6626,197 @@ DRAW_LINE:
 @dec_y:
         dec LINE_CUR_Y
         jmp @loop
+
+; ============================================================================
+; SECOND QIX DIRECTIONAL TRIANGLE SPRITES (copied to bank 1 $6500 at start)
+; ============================================================================
+; 8 directional triangle sprites for the second Qix (24x21, 64 bytes each)
+; order: 0=E 1=SE 2=S 3=SW 4=W 5=NW 6=N 7=NE  (selected via sprite pointer)
+QIX2_SPRITE_DIRS:
+        ; dir 0 = E
+        !byte $40,$00,$00
+        !byte $70,$00,$00
+        !byte $7C,$00,$00
+        !byte $7F,$00,$00
+        !byte $7F,$C0,$00
+        !byte $7F,$F8,$00
+        !byte $7F,$FE,$00
+        !byte $7F,$FF,$80
+        !byte $7F,$FF,$E0
+        !byte $7F,$FF,$F8
+        !byte $7F,$FF,$F8
+        !byte $7F,$FF,$E0
+        !byte $7F,$FF,$80
+        !byte $7F,$FE,$00
+        !byte $7F,$F8,$00
+        !byte $7F,$C0,$00
+        !byte $7F,$00,$00
+        !byte $7C,$00,$00
+        !byte $70,$00,$00
+        !byte $40,$00,$00
+        !byte $00,$00,$00
+        !byte $00          ; pad to 64 bytes
+        ; dir 1 = SE
+        !byte $03,$F8,$00
+        !byte $07,$F8,$00
+        !byte $0F,$FC,$00
+        !byte $1F,$FC,$00
+        !byte $3F,$FC,$00
+        !byte $7F,$FE,$00
+        !byte $FF,$FE,$00
+        !byte $FF,$FE,$00
+        !byte $FF,$FF,$00
+        !byte $FF,$FF,$00
+        !byte $FF,$FF,$00
+        !byte $3F,$FF,$80
+        !byte $07,$FF,$80
+        !byte $00,$FF,$C0
+        !byte $00,$1F,$C0
+        !byte $00,$03,$C0
+        !byte $00,$00,$E0
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00          ; pad to 64 bytes
+        ; dir 2 = S
+        !byte $3F,$FF,$F8
+        !byte $3F,$FF,$F8
+        !byte $1F,$FF,$F0
+        !byte $1F,$FF,$F0
+        !byte $0F,$FF,$E0
+        !byte $0F,$FF,$E0
+        !byte $07,$FF,$C0
+        !byte $07,$FF,$C0
+        !byte $03,$FF,$80
+        !byte $03,$FF,$80
+        !byte $01,$FF,$00
+        !byte $01,$FF,$00
+        !byte $00,$FE,$00
+        !byte $00,$FE,$00
+        !byte $00,$7C,$00
+        !byte $00,$7C,$00
+        !byte $00,$38,$00
+        !byte $00,$38,$00
+        !byte $00,$10,$00
+        !byte $00,$10,$00
+        !byte $00,$10,$00
+        !byte $00          ; pad to 64 bytes
+        ; dir 3 = SW
+        !byte $00,$3F,$80
+        !byte $00,$3F,$C0
+        !byte $00,$7F,$E0
+        !byte $00,$7F,$F0
+        !byte $00,$7F,$F8
+        !byte $00,$FF,$FC
+        !byte $00,$FF,$FE
+        !byte $00,$FF,$FF
+        !byte $01,$FF,$FF
+        !byte $01,$FF,$FF
+        !byte $01,$FF,$FF
+        !byte $03,$FF,$F8
+        !byte $03,$FF,$C0
+        !byte $07,$FE,$00
+        !byte $07,$F0,$00
+        !byte $07,$80,$00
+        !byte $0E,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00          ; pad to 64 bytes
+        ; dir 4 = W
+        !byte $00,$00,$04
+        !byte $00,$00,$1C
+        !byte $00,$00,$7C
+        !byte $00,$01,$FC
+        !byte $00,$07,$FC
+        !byte $00,$3F,$FC
+        !byte $00,$FF,$FC
+        !byte $03,$FF,$FC
+        !byte $0F,$FF,$FC
+        !byte $3F,$FF,$FC
+        !byte $3F,$FF,$FC
+        !byte $0F,$FF,$FC
+        !byte $03,$FF,$FC
+        !byte $00,$FF,$FC
+        !byte $00,$3F,$FC
+        !byte $00,$07,$FC
+        !byte $00,$01,$FC
+        !byte $00,$00,$7C
+        !byte $00,$00,$1C
+        !byte $00,$00,$04
+        !byte $00,$00,$00
+        !byte $00          ; pad to 64 bytes
+        ; dir 5 = NW
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $0E,$00,$00
+        !byte $07,$80,$00
+        !byte $07,$F0,$00
+        !byte $07,$FE,$00
+        !byte $03,$FF,$C0
+        !byte $03,$FF,$F8
+        !byte $01,$FF,$FF
+        !byte $01,$FF,$FF
+        !byte $01,$FF,$FF
+        !byte $00,$FF,$FF
+        !byte $00,$FF,$FE
+        !byte $00,$FF,$FC
+        !byte $00,$7F,$F8
+        !byte $00,$7F,$F0
+        !byte $00,$7F,$E0
+        !byte $00,$3F,$C0
+        !byte $00,$3F,$80
+        !byte $00,$3F,$00
+        !byte $00          ; pad to 64 bytes
+        ; dir 6 = N
+        !byte $00,$10,$00
+        !byte $00,$10,$00
+        !byte $00,$38,$00
+        !byte $00,$38,$00
+        !byte $00,$7C,$00
+        !byte $00,$7C,$00
+        !byte $00,$FE,$00
+        !byte $00,$FE,$00
+        !byte $01,$FF,$00
+        !byte $01,$FF,$00
+        !byte $03,$FF,$80
+        !byte $03,$FF,$80
+        !byte $07,$FF,$C0
+        !byte $07,$FF,$C0
+        !byte $0F,$FF,$E0
+        !byte $0F,$FF,$E0
+        !byte $1F,$FF,$F0
+        !byte $1F,$FF,$F0
+        !byte $3F,$FF,$F8
+        !byte $3F,$FF,$F8
+        !byte $7F,$FF,$FC
+        !byte $00          ; pad to 64 bytes
+        ; dir 7 = NE
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$00
+        !byte $00,$00,$E0
+        !byte $00,$03,$C0
+        !byte $00,$1F,$C0
+        !byte $00,$FF,$C0
+        !byte $07,$FF,$80
+        !byte $3F,$FF,$80
+        !byte $FF,$FF,$00
+        !byte $FF,$FF,$00
+        !byte $FF,$FF,$00
+        !byte $FF,$FE,$00
+        !byte $FF,$FE,$00
+        !byte $7F,$FE,$00
+        !byte $3F,$FC,$00
+        !byte $1F,$FC,$00
+        !byte $0F,$FC,$00
+        !byte $07,$F8,$00
+        !byte $03,$F8,$00
+        !byte $01,$F8,$00
+        !byte $00          ; pad to 64 bytes
 
 ; ============================================================================
 ; TITLE SCREEN BITMAP DATA
