@@ -4385,40 +4385,38 @@ INIT_MUSIC:
         lda #1
         sta MUSIC_ENABLED
 
-        ; Voice 1: Driving bass - sawtooth for 80s punch
+        ; Voice 1: Hammering bass pedal - sawtooth, heavy & thick
         lda #$00
         sta SID_PW_LO1
         lda #$06
         sta SID_PW_HI1
-        lda #$02            ; Attack=0, Decay=2 - tight punch
+        lda #$08            ; Attack=0, Decay=8 - punchy front
         sta SID_AD1
-        lda #$A0            ; Sustain=10, Release=0
+        lda #$70            ; Sustain=7, Release=0 - fat, heavy body
         sta SID_SR1
 
-        ; Voice 2: Soaring synth lead - narrow pulse, Jan Hammer reed tone
+        ; Voice 2: The riff lead - fat 50% pulse, sharp percussive pluck
         lda #$00
         sta SID_PW_LO2
-        lda #$04            ; ~25% pulse - nasal, vocal character
+        lda #$08            ; ~50% pulse - thick square, hard-edged
         sta SID_PW_HI2
-        lda #$3B            ; Attack=3, Decay=11 - soft swell into note
+        lda #$05            ; Attack=0, Decay=5 - sharp, drum-like hit
         sta SID_AD2
-        lda #$A9            ; Sustain=10, Release=9 - long legato tail
+        lda #$20            ; Sustain=2, Release=0 - quick decay, no ring
         sta SID_SR2
 
-        ; Voice 3: Atmospheric pad - triangle for warmth
-        lda #$7C            ; Attack=7, Decay=12 - slow swell
+        ; Voice 3: Sharp drum - noise, tight transient (kick/snare/hat)
+        lda #$05            ; Attack=0, Decay=5 - sharp, fast drum tail
         sta SID_AD3
-        lda #$60            ; Sustain=6, Release=0
+        lda #$00            ; Sustain=0, Release=0 - cracks then gone
         sta SID_SR3
 
-        ; Filter - lowpass, warm cutoff for Miami night sheen
+        ; Filter OFF - keep the saw/pulse raw and aggressive (full bite)
         lda #$00
         sta SID_FILT_LO
-        lda #$30            ; Warmer cutoff - softens the edges
         sta SID_FILT_HI
-        lda #$72            ; Filter voices 1+2 + resonance for character
         sta SID_FILT_CTRL
-        lda #$1F            ; Lowpass + max volume
+        lda #$0F            ; No filter routing, max volume
         sta SID_VOLUME
 
         rts
@@ -4433,10 +4431,10 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo control - every 8 frames (~6.25 Hz, upbeat arcade bounce)
+        ; Tempo control - every 4 frames (~12.5 Hz, fast & relentless)
         inc MUSIC_TIMER
         lda MUSIC_TIMER
-        cmp #8
+        cmp #4
         bcc @do_arp
         lda #0
         sta MUSIC_TIMER
@@ -4492,12 +4490,12 @@ UPDATE_MUSIC:
         sta SID_FREQ_LO3
         lda NOTE_FREQ_HI, y
         sta SID_FREQ_HI3
-        lda #$11            ; Gate on, triangle for warm pad
+        lda #$81            ; Gate on, NOISE - kick/snare drum hit
         sta SID_CTRL3
         jmp @advance
 
 @pad_off:
-        lda #$10            ; Gate off
+        lda #$80            ; Gate off (noise)
         sta SID_CTRL3
 
 @advance:
@@ -4511,12 +4509,12 @@ UPDATE_MUSIC:
         jmp @done
 
 @do_arp:
-        ; Arpeggio runs between main beats for shimmer
+        ; Offbeat hi-hat on voice 3 - the sharp 16th drive
         lda MUSIC_TIMER
-        cmp #4
+        cmp #2
         bne @done
 
-        ; Quick arpeggio note change on voice 3
+        ; Retrigger the drum on the offbeat
         ldx MUSIC_POS
         lda ARP_PATTERN, x
         cmp #$FF
@@ -4527,7 +4525,7 @@ UPDATE_MUSIC:
         sta SID_FREQ_LO3
         lda NOTE_FREQ_HI, y
         sta SID_FREQ_HI3
-        lda #$11            ; Triangle wave
+        lda #$81            ; Gate on, NOISE - sharp drum hit
         sta SID_CTRL3
 
 @done:
@@ -4776,60 +4774,60 @@ NOTE_FREQ_HI:
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
 ; ----------------------------------------------------------------------------
-; "Neon Sprint" - original upbeat arcade tune for gameplay.
-; Built on the classic catchy "axis" loop: Am - F - C - G (i - VI - III - VII
-; in A minor), 4 bars of 8 eighth-notes. Bouncy root-fifth-octave bass, a
-; singable hook lead, a warm sustained pad, and a chord-tone arpeggio shimmer.
-; All melodic notes are drawn from the A natural-minor scale (A B C D E F G).
+; "Overdrive" - fast, heavy, drum-driven riff tune for gameplay.
+; A pedal-tone metal/chiptune riff in E minor: the low E is hammered
+; relentlessly while the lead riff climbs above it (G, A, B) each bar - the
+; classic pedal-point riff shape. Voice 3 is a SHARP NOISE DRUM kit
+; (kick/snare on the beat, hi-hat on the offbeat) pounding driving 16ths.
+; 4 bars of 8 steps at 4 frames/step (fast), filter off for bite.
+; All melodic notes from E natural-minor (E F# G A B C D).
 ; ----------------------------------------------------------------------------
 
-; Bass pattern - bouncy root-fifth-octave drive, the engine of the groove.
-; Note refs: 1=F1, 3=G1, 5=A1, 8=C2, 10=D2, 12=E2, 13=F2, 15=G2, 17=A2, 20=C3
+; Bass - hammered low-E pedal with octave pops. The relentless engine.
+; Note refs: 0=E1, 5=A1, 12=E2, 17=A2
 BASS_PATTERN:
-        ; Bar 1 (Am): root-fifth-octave bounce on A
-        !byte 5, 12, 17, 12, 5, 12, 17, 12    ; A1-E2-A2-E2 x2
-        ; Bar 2 (F): drop to F, same bouncing shape
-        !byte 1, 8, 13, 8, 1, 8, 13, 8        ; F1-C2-F2-C2 x2
-        ; Bar 3 (C): lift to C
-        !byte 8, 15, 20, 15, 8, 15, 20, 15    ; C2-G2-C3-G2 x2
-        ; Bar 4 (G): G drive, sets up the loop back to Am
-        !byte 3, 10, 15, 10, 3, 10, 15, 10    ; G1-D2-G2-D2 x2
+        ; Bar 1 (E pedal): E1 chug with E2 octave pops
+        !byte 0, 0, 12, 0, 0, 0, 12, 0        ; E1-E1-E2-E1 x2
+        ; Bar 2 (E pedal): same drive
+        !byte 0, 0, 12, 0, 0, 0, 12, 0        ; E1-E1-E2-E1 x2
+        ; Bar 3 (E pedal): hold the low end down
+        !byte 0, 0, 12, 0, 0, 0, 12, 0        ; E1-E1-E2-E1 x2
+        ; Bar 4: shove to A, then slam back to E for the turnaround
+        !byte 5, 5, 17, 5, 0, 0, 12, 0        ; A1-A1-A2-A1 / E1-E1-E2-E1
 
-; Lead melody - the catchy hook. $FF = hold previous note (legato).
-; A bright, singable line that rides the chord tones of each bar.
-; Refs: 32=C4, 34=D4, 36=E4, 37=F4, 39=G4, 41=A4, 43=B4
+; Lead riff - the hook. Hammered E3 with a climbing answer each bar.
+; $FF = rest (gate off) - the gaps give the riff its chug/palm-mute groove.
+; Refs: 24=E3, 26=F#3, 27=G3, 29=A3, 31=B3, 32=C4
 LEAD_PATTERN:
-        ; Bar 1 (Am): the hook - A4 rings, dips to E4, C4-E4 skip, back to A4
-        !byte 41, $FF, 36, $FF, 32, 36, 41, $FF   ; A4 - E4 - C4-E4 - A4
-        ; Bar 2 (F): answer phrase over F (F-A-C)
-        !byte 41, $FF, 39, 37, 32, $FF, 37, $FF   ; A4 - G4-F4 - C4 - F4
-        ; Bar 3 (C): brighten over C (C-E-G)
-        !byte 39, $FF, 36, $FF, 32, $FF, 39, $FF  ; G4 - E4 - C4 - G4
-        ; Bar 4 (G): peak on B4, fall through to G4 for the turnaround
-        !byte 43, $FF, 39, $FF, 34, $FF, 39, $FF  ; B4 - G4 - D4 - G4
+        ; Bar 1: chug E, answer up to G - F#
+        !byte 24, $FF, 24, 24, 27, $FF, 26, $FF   ; E3 . E3 E3  G3 . F#3 .
+        ; Bar 2: chug E, answer reaches A - G
+        !byte 24, $FF, 24, 24, 29, $FF, 27, $FF   ; E3 . E3 E3  A3 . G3 .
+        ; Bar 3: chug E, answer peaks at B - A
+        !byte 24, $FF, 24, 24, 31, $FF, 29, $FF   ; E3 . E3 E3  B3 . A3 .
+        ; Bar 4: descending run C-B-A-G-F# resolving back toward E
+        !byte 32, $FF, 31, $FF, 29, 27, 26, $FF   ; C4 . B3 .  A3 G3 F#3 .
 
-; Pad/chord pattern - sustained chord root, warm triangle bed under the lead.
+; Drum - on-the-beat hits, voice 3 NOISE. The index just sets the noise pitch:
+; low = kick boom, mid = snare crack, high = tom. Sharp envelope = drum.
+; Kick=0 (E1), Snare=20 (C3), Tom=24/29.
 PAD_PATTERN:
-        ; Bar 1 (Am): A3 sustained
-        !byte 29, 29, 29, 29, 29, 29, 29, 29  ; A3
-        ; Bar 2 (F): F3 sustained
-        !byte 25, 25, 25, 25, 25, 25, 25, 25  ; F3
-        ; Bar 3 (C): C3 sustained
-        !byte 20, 20, 20, 20, 20, 20, 20, 20  ; C3
-        ; Bar 4 (G): G3 sustained
-        !byte 27, 27, 27, 27, 27, 27, 27, 27  ; G3
+        ; Bars 1-3: relentless kick / snare backbeat
+        !byte 0, 20, 0, 20, 0, 20, 0, 20      ; K S K S K S K S
+        !byte 0, 20, 0, 20, 0, 20, 0, 20      ; K S K S K S K S
+        !byte 0, 20, 0, 20, 0, 20, 0, 20      ; K S K S K S K S
+        ; Bar 4: tom fill on the last beat for the turnaround
+        !byte 0, 20, 0, 20, 0, 20, 24, 29     ; K S K S K S Tom Tom
 
-; Arpeggio pattern - broken-chord shimmer on voice 3's offbeat slot.
-; One arp note per step; traces each bar's chord tones for that bright sparkle.
+; Drum - offbeat hi-hat, voice 3 NOISE at high pitch = sharp tick on the 16ths.
+; Hat=41 (A4, bright noise).
 ARP_PATTERN:
-        ; Bar 1 (Am): C-E-A-E
-        !byte 32, 36, 41, 36, 32, 36, 41, 36   ; C4-E4-A4-E4 x2
-        ; Bar 2 (F): C-F-A-F
-        !byte 32, 37, 41, 37, 32, 37, 41, 37   ; C4-F4-A4-F4 x2
-        ; Bar 3 (C): C-E-G-E
-        !byte 32, 36, 39, 36, 32, 36, 39, 36   ; C4-E4-G4-E4 x2
-        ; Bar 4 (G): D-G-B-G
-        !byte 34, 39, 43, 39, 34, 39, 43, 39   ; D4-G4-B4-G4 x2
+        ; Bars 1-3: hat on every offbeat
+        !byte 41, 41, 41, 41, 41, 41, 41, 41  ; hats
+        !byte 41, 41, 41, 41, 41, 41, 41, 41  ; hats
+        !byte 41, 41, 41, 41, 41, 41, 41, 41  ; hats
+        ; Bar 4: open-up the hats into the fill
+        !byte 41, 41, 41, 41, 41, 41, 43, 43  ; hats + fill
 
 ; ============================================================================
 ; SAD MUSIC PATTERNS - Game Over
