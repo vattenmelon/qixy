@@ -4433,10 +4433,10 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo control - every 9 frames (~5.5 Hz, laid-back Miami groove)
+        ; Tempo control - every 8 frames (~6.25 Hz, upbeat arcade bounce)
         inc MUSIC_TIMER
         lda MUSIC_TIMER
-        cmp #9
+        cmp #8
         bcc @do_arp
         lda #0
         sta MUSIC_TIMER
@@ -4532,6 +4532,17 @@ UPDATE_MUSIC:
 
 @done:
         rts
+
+; ----------------------------------------------------------------------------
+; RELOCATION: the routines below had grown past $2000 into CHARSET_RAM
+; ($2000-$27FF), so INIT_CHARSET overwrote their machine code at runtime -
+; calling them (e.g. INIT_SAD_MUSIC on game over) executed character bitmap
+; data as instructions and crashed, leaving the death-explosion noise ringing
+; (the "static" with no sad music). INIT_CHARSET only fills chars 0-136
+; ($2000-$245F), so place these routines in the unused upper charset region
+; at $2500 - still VIC bank 0 RAM, never written, and within the existing
+; file gap (no file-size growth). Normal music (below $2000) was unaffected.
+* = $2500
 
 ; === SAD MUSIC UPDATE ===
 ; Slower tempo, softer waveforms, melancholic patterns
@@ -4641,6 +4652,16 @@ INIT_SAD_MUSIC:
         sta MUSIC_MODE          ; Sad music mode
         sta MUSIC_ENABLED
 
+        ; Silence all voices first - kills the leftover death-explosion
+        ; noise on voice 1 (left gated as $81 noise) so the sad music isn't
+        ; drowned out. Gate-off here also lets each note retrigger cleanly.
+        lda #0
+        sta SID_CTRL1
+        sta SID_CTRL2
+        sta SID_CTRL3
+        sta SID_FREQ_LO1
+        sta SID_FREQ_HI1        ; clear death-sound freq ($1000)
+
         ; Voice 1: Slow bass - triangle for softness
         lda #$00
         sta SID_PW_LO1
@@ -4664,17 +4685,18 @@ INIT_SAD_MUSIC:
         ; Voice 3: Pad - triangle for atmosphere
         lda #$8F            ; Attack=8, Decay=15 - slowest
         sta SID_AD3
-        lda #$30            ; Sustain=3, Release=0 - quiet
+        lda #$A0            ; Sustain=10, Release=0 - audible pad bed
         sta SID_SR3
 
-        ; Filter - lowpass, very low cutoff for muffled sad sound
+        ; No filter: the old low-cutoff lowpass muffled the bass+lead into
+        ; near-silence (especially on 6581 SID), which made game-over sound
+        ; like nothing was playing. Keep voices clean at full volume - the
+        ; slow triangle envelopes and minor melody carry the "sad" feel.
         lda #$00
         sta SID_FILT_LO
-        lda #$20            ; Very low cutoff
         sta SID_FILT_HI
-        lda #$73            ; Filter voices 1,2 + resonance
-        sta SID_FILT_CTRL
-        lda #$1C            ; Lowpass + reduced volume
+        sta SID_FILT_CTRL   ; no voices routed through the filter
+        lda #$0F            ; max volume, no filter mode bits
         sta SID_VOLUME
 
         rts
@@ -4754,61 +4776,60 @@ NOTE_FREQ_HI:
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
 ; ----------------------------------------------------------------------------
-; "Night Drive" - original Miami Vice / Crockett's Theme-style homage.
-; NOT a transcription of Jan Hammer's copyrighted melody; this is an original
-; line written in the same synthwave idiom (slow octave-pulse bass, sustained
-; soaring lead, shimmering arpeggio) over the classic minor i-VI-iv-V cycle.
-; Progression: Em - Cmaj7 - Am7 - B7 (i - VI - iv - V in E minor), 4 bars.
-; All melodic notes are drawn from the E natural-minor scale (E F# G A B C D).
+; "Neon Sprint" - original upbeat arcade tune for gameplay.
+; Built on the classic catchy "axis" loop: Am - F - C - G (i - VI - III - VII
+; in A minor), 4 bars of 8 eighth-notes. Bouncy root-fifth-octave bass, a
+; singable hook lead, a warm sustained pad, and a chord-tone arpeggio shimmer.
+; All melodic notes are drawn from the A natural-minor scale (A B C D E F G).
 ; ----------------------------------------------------------------------------
 
-; Bass pattern - driving octave pulse, the engine of the groove.
-; Note refs: 0=E1, 6=A#1, 7=B1, 8=C2, 12=E2, 17=A2, 18=A#2, 19=B2, 20=C3
+; Bass pattern - bouncy root-fifth-octave drive, the engine of the groove.
+; Note refs: 1=F1, 3=G1, 5=A1, 8=C2, 10=D2, 12=E2, 13=F2, 15=G2, 17=A2, 20=C3
 BASS_PATTERN:
-        ; Bar 1 (Em): the signature steady octave pulse on the tonic
-        !byte 12, 0, 12, 0, 12, 0, 12, 0    ; E2-E1 x4
-        ; Bar 2 (Cmaj7): lift to C, last beat steps up to B as a leading tone
-        !byte 20, 8, 20, 8, 20, 8, 19, 7    ; C3-C2 x3, B2-B1 approach
-        ; Bar 3 (Am7): warm pulse on A
-        !byte 17, 5, 17, 5, 17, 5, 17, 5    ; A2-A1 x4
-        ; Bar 4 (B7 -> Em): B7 tension, chromatic A# slide, resolve to E
-        !byte 19, 7, 19, 7, 18, 6, 12, 0    ; B2-B1 x2, A#2-A#1, E2-E1
+        ; Bar 1 (Am): root-fifth-octave bounce on A
+        !byte 5, 12, 17, 12, 5, 12, 17, 12    ; A1-E2-A2-E2 x2
+        ; Bar 2 (F): drop to F, same bouncing shape
+        !byte 1, 8, 13, 8, 1, 8, 13, 8        ; F1-C2-F2-C2 x2
+        ; Bar 3 (C): lift to C
+        !byte 8, 15, 20, 15, 8, 15, 20, 15    ; C2-G2-C3-G2 x2
+        ; Bar 4 (G): G drive, sets up the loop back to Am
+        !byte 3, 10, 15, 10, 3, 10, 15, 10    ; G1-D2-G2-D2 x2
 
-; Lead melody - sustained, soaring synth line. $FF = hold previous note (legato).
-; A rising arch peaks at B4 in bar 2, then steps back down to the tonic by bar 4.
-; Refs: 31=B3, 34=D4, 36=E4, 38=F#4, 39=G4, 41=A4, 43=B4
+; Lead melody - the catchy hook. $FF = hold previous note (legato).
+; A bright, singable line that rides the chord tones of each bar.
+; Refs: 32=C4, 34=D4, 36=E4, 37=F4, 39=G4, 41=A4, 43=B4
 LEAD_PATTERN:
-        ; Bar 1 (Em): patient statement - E4 swells, then climbs to G4
-        !byte 36, $FF, $FF, $FF, 39, $FF, $FF, $FF  ; E4 held -> G4 held
-        ; Bar 2 (Cmaj7): reach the B4 apex, ease back down A4 - G4
-        !byte 43, $FF, $FF, $FF, 41, $FF, 39, $FF   ; B4 held -> A4 -> G4
-        ; Bar 3 (Am7): settle on E4, lift again through F#4 - G4
-        !byte 36, $FF, $FF, $FF, 38, $FF, 39, $FF   ; E4 held -> F#4 -> G4
-        ; Bar 4 (B7 -> Em): stepwise descent resolves onto the tonic E4
-        !byte 41, $FF, 39, $FF, 38, $FF, 36, $FF    ; A4-G4-F#4-E4 resolve
+        ; Bar 1 (Am): the hook - A4 rings, dips to E4, C4-E4 skip, back to A4
+        !byte 41, $FF, 36, $FF, 32, 36, 41, $FF   ; A4 - E4 - C4-E4 - A4
+        ; Bar 2 (F): answer phrase over F (F-A-C)
+        !byte 41, $FF, 39, 37, 32, $FF, 37, $FF   ; A4 - G4-F4 - C4 - F4
+        ; Bar 3 (C): brighten over C (C-E-G)
+        !byte 39, $FF, 36, $FF, 32, $FF, 39, $FF  ; G4 - E4 - C4 - G4
+        ; Bar 4 (G): peak on B4, fall through to G4 for the turnaround
+        !byte 43, $FF, 39, $FF, 34, $FF, 39, $FF  ; B4 - G4 - D4 - G4
 
-; Pad/chord pattern - sustained root motion, warm triangle bed under the lead.
+; Pad/chord pattern - sustained chord root, warm triangle bed under the lead.
 PAD_PATTERN:
-        ; Bar 1 (Em): E3 sustained
-        !byte 24, 24, 24, 24, 24, 24, 24, 24  ; E3
-        ; Bar 2 (Cmaj7): shift to C3
+        ; Bar 1 (Am): A3 sustained
+        !byte 29, 29, 29, 29, 29, 29, 29, 29  ; A3
+        ; Bar 2 (F): F3 sustained
+        !byte 25, 25, 25, 25, 25, 25, 25, 25  ; F3
+        ; Bar 3 (C): C3 sustained
         !byte 20, 20, 20, 20, 20, 20, 20, 20  ; C3
-        ; Bar 3 (Am7): drop to A2 root
-        !byte 17, 17, 17, 17, 17, 17, 17, 17  ; A2
-        ; Bar 4 (B7 -> Em): B2 then resolves to E3 on last two beats
-        !byte 19, 19, 19, 19, 19, 19, 24, 24  ; B2 x6, E3 x2
+        ; Bar 4 (G): G3 sustained
+        !byte 27, 27, 27, 27, 27, 27, 27, 27  ; G3
 
 ; Arpeggio pattern - broken-chord shimmer on voice 3's offbeat slot.
-; One arp note per step; traces each bar's chord tones for that 80s sparkle.
+; One arp note per step; traces each bar's chord tones for that bright sparkle.
 ARP_PATTERN:
-        ; Bar 1 (Em): E-G-B-G
-        !byte 36, 39, 43, 39, 36, 39, 43, 39   ; E4-G4-B4-G4 x2
-        ; Bar 2 (Cmaj7): C-E-G-B
-        !byte 32, 36, 39, 43, 32, 36, 39, 43   ; C4-E4-G4-B4 x2
-        ; Bar 3 (Am7): A-C-E-G
-        !byte 29, 32, 36, 39, 29, 32, 36, 39   ; A3-C4-E4-G4 x2
-        ; Bar 4 (B7): B-D#-F#-A then ease back toward Em color
-        !byte 31, 35, 38, 41, 38, 35, 36, 39   ; B3-D#4-F#4-A4-F#4-D#4-E4-G4
+        ; Bar 1 (Am): C-E-A-E
+        !byte 32, 36, 41, 36, 32, 36, 41, 36   ; C4-E4-A4-E4 x2
+        ; Bar 2 (F): C-F-A-F
+        !byte 32, 37, 41, 37, 32, 37, 41, 37   ; C4-F4-A4-F4 x2
+        ; Bar 3 (C): C-E-G-E
+        !byte 32, 36, 39, 36, 32, 36, 39, 36   ; C4-E4-G4-E4 x2
+        ; Bar 4 (G): D-G-B-G
+        !byte 34, 39, 43, 39, 34, 39, 43, 39   ; D4-G4-B4-G4 x2
 
 ; ============================================================================
 ; SAD MUSIC PATTERNS - Game Over
