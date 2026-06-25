@@ -1681,7 +1681,8 @@ UPDATE_PLAYER:
         lda #0
         sta PLAYER_DRAWING
 
-        ; Play claim sound
+        ; Play connect + claim sounds (line locked in!)
+        jsr SFX_CONNECT
         jsr SFX_CLAIM
 
 @no_move:
@@ -2926,6 +2927,8 @@ UPDATE_DYING:
         rts
 
 @respawn:
+        jsr FLASH_BORDER_YELLOW ; Flash border yellow twice (life lost)
+
         ; Clear active trail from screen (completed areas persist)
         jsr CLEAR_TRAIL
 
@@ -3196,6 +3199,7 @@ UPDATE_LEVEL_DONE:
 ; ============================================================================
 
 SHOW_GAME_OVER_MSG:
+        jsr FLASH_BORDER_RED    ; Flash border red twice
         jsr INIT_SAD_MUSIC      ; Start sad music for game over
         ldx #0
 @lp:    lda GAMEOVER_TXT, x
@@ -3206,6 +3210,39 @@ SHOW_GAME_OVER_MSG:
         inx
         bne @lp
 @done:  rts
+
+; Flash the screen border red two times, then restore black
+FLASH_BORDER_RED:
+        lda #COL_RED
+        jmp FLASH_BORDER_COLOR
+
+; Flash the screen border yellow two times, then restore black
+FLASH_BORDER_YELLOW:
+        lda #COL_YELLOW
+        ; fall through
+
+; Flash the screen border two times in colour A, then restore black
+FLASH_BORDER_COLOR:
+        sta TEMP1               ; Flash colour
+        ldx #2                  ; Two flashes
+@flash:
+        lda TEMP1
+        sta VIC_BORDER
+        ldy #12                 ; ~12 frames on
+@on:    jsr WAIT_FRAME
+        dey
+        bne @on
+
+        lda #COL_BLACK
+        sta VIC_BORDER
+        ldy #12                 ; ~12 frames off
+@off:   jsr WAIT_FRAME
+        dey
+        bne @off
+
+        dex
+        bne @flash
+        rts
 
 UPDATE_GAME_OVER:
         ; Flash text
@@ -4339,6 +4376,25 @@ SFX_CLAIM:
         sta SID_SR1
         rts
 
+SFX_CONNECT:
+        ; Classic retro "line locked in" blip - bright snappy pulse on voice 2
+        ; so it layers over the low SFX_CLAIM thunk (voice 1) instead of
+        ; overwriting it. Music re-gates voice 2 within ~4 frames, keeping it
+        ; short like the other one-shot effects.
+        lda #$00
+        sta SID_FREQ_LO2
+        lda #$40            ; High, bright tone
+        sta SID_FREQ_HI2
+        lda #$08
+        sta SID_PW_HI2      ; 50% pulse width
+        lda #$41            ; Pulse wave, gate on
+        sta SID_CTRL2
+        lda #$08            ; Fast attack, short decay
+        sta SID_AD2
+        lda #$00            ; No sustain - quick blip
+        sta SID_SR2
+        rts
+
 SFX_EXTRA_LIFE:
         ; High rising tone on voice 1 for extra life fanfare
         lda #$00
@@ -4400,15 +4456,15 @@ INIT_MUSIC:
         sta SID_PW_LO2
         lda #$08            ; ~50% pulse - thick square, hard-edged
         sta SID_PW_HI2
-        lda #$05            ; Attack=0, Decay=5 - sharp, drum-like hit
+        lda #$04            ; Attack=0, Decay=4 - razor-sharp percussive hit
         sta SID_AD2
-        lda #$20            ; Sustain=2, Release=0 - quick decay, no ring
+        lda #$10            ; Sustain=1, Release=0 - hard palm-muted chug
         sta SID_SR2
 
-        ; Voice 3: Sharp drum - noise, tight transient (kick/snare/hat)
-        lda #$05            ; Attack=0, Decay=5 - sharp, fast drum tail
+        ; Voice 3: Powerful drum - noise, softened transient + rounder body
+        lda #$16            ; Attack=1, Decay=6 - softer front, fuller tail (less click)
         sta SID_AD3
-        lda #$00            ; Sustain=0, Release=0 - cracks then gone
+        lda #$00            ; Sustain=0, Release=0 - powerful hit, dies clean
         sta SID_SR3
 
         ; Filter OFF - keep the saw/pulse raw and aggressive (full bite)
@@ -4431,7 +4487,7 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo control - every 4 frames (~12.5 Hz, fast & relentless)
+        ; Tempo control - every 4 frames (~12.5 Hz, driving but clear)
         inc MUSIC_TIMER
         lda MUSIC_TIMER
         cmp #4
@@ -4509,7 +4565,7 @@ UPDATE_MUSIC:
         jmp @done
 
 @do_arp:
-        ; Offbeat hi-hat on voice 3 - the sharp 16th drive
+        ; Offbeat hi-hat on voice 3 - the drum's 16th drive
         lda MUSIC_TIMER
         cmp #2
         bne @done
@@ -4525,7 +4581,7 @@ UPDATE_MUSIC:
         sta SID_FREQ_LO3
         lda NOTE_FREQ_HI, y
         sta SID_FREQ_HI3
-        lda #$81            ; Gate on, NOISE - sharp drum hit
+        lda #$81            ; Gate on, NOISE - drum hit
         sta SID_CTRL3
 
 @done:
@@ -4774,12 +4830,12 @@ NOTE_FREQ_HI:
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
 ; ----------------------------------------------------------------------------
-; "Overdrive" - fast, heavy, drum-driven riff tune for gameplay.
-; A pedal-tone metal/chiptune riff in E minor: the low E is hammered
-; relentlessly while the lead riff climbs above it (G, A, B) each bar - the
-; classic pedal-point riff shape. Voice 3 is a SHARP NOISE DRUM kit
-; (kick/snare on the beat, hi-hat on the offbeat) pounding driving 16ths.
-; 4 bars of 8 steps at 4 frames/step (fast), filter off for bite.
+; "Overdrive" - hard-hitting riff theme driven by clear, powerful drums.
+; A pedal-tone metal/chiptune riff in E minor: the low E is hammered while
+; the lead climbs above it (G, A, B) each bar - the riff DUCKS OUT on the
+; snare beats so voice 3's NOISE DRUM kit cuts through clean. Punchy boom-bap
+; kick/snare with light hats in the gaps.
+; 4 bars of 8 steps at 4 frames/step (~12.5 Hz), filter off for bite.
 ; All melodic notes from E natural-minor (E F# G A B C D).
 ; ----------------------------------------------------------------------------
 
@@ -4795,39 +4851,41 @@ BASS_PATTERN:
         ; Bar 4: shove to A, then slam back to E for the turnaround
         !byte 5, 5, 17, 5, 0, 0, 12, 0        ; A1-A1-A2-A1 / E1-E1-E2-E1
 
-; Lead riff - the hook. Hammered E3 with a climbing answer each bar.
-; $FF = rest (gate off) - the gaps give the riff its chug/palm-mute groove.
-; Refs: 24=E3, 26=F#3, 27=G3, 29=A3, 31=B3, 32=C4
+; Lead riff - driving pedal chug that DUCKS OUT on the snare beats (steps 2 & 6,
+; $FF = rest) so the snare cracks through clean. Hammered E3 with a climbing
+; accent each bar. Refs: 24=E3, 26=F#3, 27=G3, 29=A3, 31=B3, 32=C4
 LEAD_PATTERN:
-        ; Bar 1: chug E, answer up to G - F#
-        !byte 24, $FF, 24, 24, 27, $FF, 26, $FF   ; E3 . E3 E3  G3 . F#3 .
-        ; Bar 2: chug E, answer reaches A - G
-        !byte 24, $FF, 24, 24, 29, $FF, 27, $FF   ; E3 . E3 E3  A3 . G3 .
-        ; Bar 3: chug E, answer peaks at B - A
-        !byte 24, $FF, 24, 24, 31, $FF, 29, $FF   ; E3 . E3 E3  B3 . A3 .
-        ; Bar 4: descending run C-B-A-G-F# resolving back toward E
-        !byte 32, $FF, 31, $FF, 29, 27, 26, $FF   ; C4 . B3 .  A3 G3 F#3 .
+        ; Bar 1: chug E around the snare, accent up to G
+        !byte 24, 24, $FF, 24, 27, 24, $FF, 24   ; E E . E  G E . E
+        ; Bar 2: accent reaches A
+        !byte 24, 24, $FF, 24, 29, 24, $FF, 24   ; E E . E  A E . E
+        ; Bar 3: accent peaks at B
+        !byte 24, 24, $FF, 24, 31, 24, $FF, 24   ; E E . E  B E . E
+        ; Bar 4: descending run, still ducking the snare
+        !byte 32, 31, $FF, 27, 29, 27, $FF, 24   ; C B . G  A G . E
 
-; Drum - on-the-beat hits, voice 3 NOISE. The index just sets the noise pitch:
-; low = kick boom, mid = snare crack, high = tom. Sharp envelope = drum.
-; Kick=0 (E1), Snare=20 (C3), Tom=24/29.
+; Drum - clear, powerful boom-bap, voice 3 NOISE. The index sets noise pitch:
+; low = kick boom, mid = snare thump, high = tom. $FF = rest, so the kick and
+; snare ring out clean instead of washing together. Lower pitches = rounder,
+; less-sharp hits. Kick=0 (E1, deep boom), Snare=17 (A2, fat thump), Toms=12/17/20/24.
 PAD_PATTERN:
-        ; Bars 1-3: relentless kick / snare backbeat
-        !byte 0, 20, 0, 20, 0, 20, 0, 20      ; K S K S K S K S
-        !byte 0, 20, 0, 20, 0, 20, 0, 20      ; K S K S K S K S
-        !byte 0, 20, 0, 20, 0, 20, 0, 20      ; K S K S K S K S
-        ; Bar 4: tom fill on the last beat for the turnaround
-        !byte 0, 20, 0, 20, 0, 20, 24, 29     ; K S K S K S Tom Tom
+        ; Bars 1-3: kick / snare on the beat, rests between = punchy & clear
+        !byte 0, $FF, 17, $FF, 0, $FF, 17, $FF    ; KICK . SNARE . KICK . SNARE .
+        !byte 0, $FF, 17, $FF, 0, $FF, 17, $FF    ; KICK . SNARE . KICK . SNARE .
+        !byte 0, $FF, 17, $FF, 0, $FF, 17, $FF    ; KICK . SNARE . KICK . SNARE .
+        ; Bar 4: kick/snare then a powerful tom-roll fill
+        !byte 0, $FF, 17, $FF, 12, 17, 20, 24     ; KICK . SNARE .  Tom roll up
 
-; Drum - offbeat hi-hat, voice 3 NOISE at high pitch = sharp tick on the 16ths.
-; Hat=41 (A4, bright noise).
+; Drum - soft hi-hat ticks in the gaps, voice 3 NOISE at mid pitch (lowered
+; from B4 so it's a warm tick, not a sharp hiss). Sparse so kick/snare lead.
+; Hat=27 (G3).
 ARP_PATTERN:
-        ; Bars 1-3: hat on every offbeat
-        !byte 41, 41, 41, 41, 41, 41, 41, 41  ; hats
-        !byte 41, 41, 41, 41, 41, 41, 41, 41  ; hats
-        !byte 41, 41, 41, 41, 41, 41, 41, 41  ; hats
-        ; Bar 4: open-up the hats into the fill
-        !byte 41, 41, 41, 41, 41, 41, 43, 43  ; hats + fill
+        ; Bars 1-3: hat only between the kick/snare hits
+        !byte $FF, 27, $FF, 27, $FF, 27, $FF, 27  ; . hat . hat . hat . hat
+        !byte $FF, 27, $FF, 27, $FF, 27, $FF, 27  ; . hat . hat . hat . hat
+        !byte $FF, 27, $FF, 27, $FF, 27, $FF, 27  ; . hat . hat . hat . hat
+        ; Bar 4: hats step back to let the tom fill speak
+        !byte $FF, 27, $FF, 27, $FF, $FF, $FF, $FF ; . hat . hat then clear
 
 ; ============================================================================
 ; SAD MUSIC PATTERNS - Game Over
