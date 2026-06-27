@@ -165,6 +165,16 @@ QIX2_DX         = $C5F6     ; signed X velocity (1/256 tile/frame)
 QIX2_DY         = $C5F7     ; signed Y velocity (1/256 tile/frame)
 QIX2_EXPLODE    = $C5F8     ; >0 = exploding (countdown frames); 0 = flying/dead
 
+; Third Sparx (level 8+): patrols the border the OPPOSITE way around from the
+; other two (mirrored wall-following) and at HALF speed. Free RAM below the
+; high-score table; SPARX_HAND selects which way MOVE_SPARX circulates.
+SPARX3_X        = $C5F9
+SPARX3_Y        = $C5FA
+SPARX3_DIR      = $C5FB
+SPARX3_ACTIVE   = $C5FC     ; 1 = third sparx in play (level 8 and up)
+SPARX_HAND      = $C5FD     ; 0 = normal CW wall-follow, 1 = mirrored (CCW)
+SPARX3_COL_IDX  = $C5FE     ; flash colour cycle index (0..2: yellow/white/green)
+
 QIX2_EXPLODE_FRAMES = 24    ; Duration of the trapped-Qix explosion animation
 
 ; Saved Qix position for fill operation (captures position at claim start)
@@ -1057,6 +1067,9 @@ INIT_LEVEL:
         sta SPARX2_Y
         lda #3              ; Moving left
         sta SPARX2_DIR
+
+        ; Third sparx (opposite direction, half speed) - set up for level 8+
+        jsr INIT_SPARX3
 
         lda #0
         sta TRAIL_COUNT
@@ -2546,6 +2559,10 @@ UPDATE_SPARX:
         and #$03
         bne @done
 
+        ; Sparx 1 and 2 follow the border the normal (CW) way
+        lda #0
+        sta SPARX_HAND
+
         ; Update Sparx 1
         ldx SPARX1_X
         ldy SPARX1_Y
@@ -2563,6 +2580,10 @@ UPDATE_SPARX:
         stx SPARX2_X
         sty SPARX2_Y
         sta SPARX2_DIR
+
+        ; Update Sparx 3 (level 8+): opposite direction, half speed.
+        ; Body lives in block 3 (UPDATE_SPARX3) to keep this block under $2000.
+        jsr UPDATE_SPARX3
 
 @done:  rts
 
@@ -2583,9 +2604,9 @@ MOVE_SPARX:
         ; 4. Turn CCW
         ; 5. Reverse
 
-        ; Step 1: Check CW for shortcuts into claimed territory
+        ; Step 1: Check inner side for shortcuts into claimed territory
         lda TEMP3
-        jsr @get_cw
+        jsr @get_inner
         jsr @try_shortcut
         bcs @move_ok
 
@@ -2594,15 +2615,15 @@ MOVE_SPARX:
         jsr @try_dir
         bcs @move_ok
 
-        ; Step 3: Turn CW (at corners)
+        ; Step 3: Turn inner (at corners)
         lda TEMP3
-        jsr @get_cw
+        jsr @get_inner
         jsr @try_dir
         bcs @move_ok
 
-        ; Step 4: Turn CCW
+        ; Step 4: Turn outer
         lda TEMP3
-        jsr @get_ccw
+        jsr @get_outer
         jsr @try_dir
         bcs @move_ok
 
@@ -2766,6 +2787,19 @@ MOVE_SPARX:
         dex
         rts
 
+; Handedness-aware turn helpers used by the wall-following steps. With
+; SPARX_HAND=0 the sparx prefers CW turns (right-hand follow); with
+; SPARX_HAND=1 the preferences are swapped, so it circulates the border the
+; opposite way. A in/out = direction. X is clobbered (unused by callers).
+@get_inner:
+        ldx SPARX_HAND
+        bne @get_ccw            ; mirrored: inner turn is CCW
+        jmp @get_cw             ; normal: inner turn is CW
+@get_outer:
+        ldx SPARX_HAND
+        bne @get_cw             ; mirrored: outer turn is CW
+        jmp @get_ccw            ; normal: outer turn is CCW
+
 ; Get counter-clockwise direction: A in, A out
 ; up->left->down->right->up
 @get_ccw:
@@ -2898,8 +2932,9 @@ MOVE_SPARX:
 CHECK_COLLISIONS:
         ; Skip all collisions during grace period
         lda GRACE_TIMER
-        bne @done
-
+        beq @check
+        rts
+@check:
         ; Player vs Sparx 1
         lda PLAYER_X
         cmp SPARX1_X
@@ -2920,6 +2955,18 @@ CHECK_COLLISIONS:
         jmp PLAYER_DEATH
 
 @no_s2:
+        ; Player vs Sparx 3 (level 8+)
+        lda SPARX3_ACTIVE
+        beq @no_s3
+        lda PLAYER_X
+        cmp SPARX3_X
+        bne @no_s3
+        lda PLAYER_Y
+        cmp SPARX3_Y
+        bne @no_s3
+        jmp PLAYER_DEATH
+
+@no_s3:
         ; Player vs Qix (within 1 tile when drawing)
         lda PLAYER_DRAWING
         beq @done
@@ -3171,6 +3218,9 @@ UPDATE_SPRITES:
         clc
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y3
+
+        ; Sparx 3 sprite (sprite 5) - level 8+. Body in block 3 (DRAW_SPARX3_SPRITE).
+        jsr DRAW_SPARX3_SPRITE
 
         ; Second Qix sprite (sprite 4) - position, MSB and green/white flash
         jsr DRAW_QIX2_SPRITE
@@ -5496,6 +5546,123 @@ CLEAR_GAMEPLAY_BITMAP:
         lda #(GAMEPLAY_SPRITES - $4000) / 64 + 3
         sta GAMEPLAY_SCREEN + $3FB
         rts
+
+; ============================================================================
+; INIT THIRD SPARX (called from INIT_LEVEL, after CLEAR_GAMEPLAY_BITMAP)
+; ============================================================================
+; The third sparx uses hardware sprite 5. It reuses the square sparx shape
+; (bank-1 slot 146, same as sprite 2). Active from level 8: it circulates the
+; border the opposite way (mirrored wall-follow, see SPARX_HAND) at half speed.
+INIT_SPARX3:
+        ; Point sprite 5 at the sparx square shape. CLEAR_GAMEPLAY_BITMAP filled
+        ; the colour/pointer page first, so this write sticks for the level.
+        lda #(GAMEPLAY_SPRITES - $4000) / 64 + 2
+        sta GAMEPLAY_SCREEN + $3FD
+
+        ; Only active from level 8 onwards
+        lda LEVEL
+        cmp #8
+        bcc @off
+
+        lda #1
+        sta SPARX3_ACTIVE
+        ; Start at the top-right corner heading LEFT. On the plain border the
+        ; circulation sense is set by the seed direction (straight-ahead has
+        ; priority in MOVE_SPARX); left-along-top is the opposite sense to
+        ; sparx 1 (which runs right-along-top). The mirrored wall-follow
+        ; (SPARX_HAND=1) then keeps it hugging the correct wall for CCW travel
+        ; once the border gets carved up by claims.
+        lda #FIELD_RIGHT
+        sta SPARX3_X
+        lda #FIELD_TOP
+        sta SPARX3_Y
+        lda #3                      ; moving left (opposite circulation)
+        sta SPARX3_DIR
+        ; Reset the flash-colour cycle, then enable sprite 5. The live colour is
+        ; written every frame by DRAW_SPARX3_SPRITE (yellow/white/green flash).
+        lda #0
+        sta SPARX3_COL_IDX
+        lda VIC_SPRITE_EN
+        ora #$20
+        sta VIC_SPRITE_EN
+        rts
+@off:
+        lda #0
+        sta SPARX3_ACTIVE
+        lda VIC_SPRITE_EN
+        and #$DF                    ; disable sprite 5
+        sta VIC_SPRITE_EN
+        rts
+
+; ============================================================================
+; UPDATE THIRD SPARX (called from UPDATE_SPARX, every 4th frame)
+; ============================================================================
+; Moves the third sparx the opposite way round the border (mirrored
+; wall-follow via SPARX_HAND) at HALF the speed of the others. The caller
+; already gates on FRAME_COUNT&3==0; gating again on bit 2 here makes it move
+; every 8th frame. No-op when inactive (earlier levels).
+UPDATE_SPARX3:
+        lda SPARX3_ACTIVE
+        beq @done
+        lda FRAME_COUNT
+        and #$04
+        bne @done                   ; half speed: only every other tick
+        lda #1
+        sta SPARX_HAND              ; mirrored wall-follow -> opposite circulation
+        ldx SPARX3_X
+        ldy SPARX3_Y
+        lda SPARX3_DIR
+        jsr MOVE_SPARX
+        stx SPARX3_X
+        sty SPARX3_Y
+        sta SPARX3_DIR
+@done:  rts
+
+; ============================================================================
+; DRAW THIRD SPARX SPRITE (called from UPDATE_SPRITES)
+; ============================================================================
+; Positions hardware sprite 5 from SPARX3_X/Y. Off levels keep the sprite
+; disabled via VIC_SPRITE_EN, so we only touch it when active.
+DRAW_SPARX3_SPRITE:
+        lda SPARX3_ACTIVE
+        bne +
+        rts
++
+        ; Flash yellow -> white -> green, advancing one step every 4 frames
+        ; (twice as fast as before).
+        lda FRAME_COUNT
+        and #$03
+        bne @no_adv
+        ldx SPARX3_COL_IDX
+        inx
+        cpx #3
+        bcc @store_idx
+        ldx #0
+@store_idx:
+        stx SPARX3_COL_IDX
+@no_adv:
+        ldx SPARX3_COL_IDX
+        lda SPARX3_COLORS, x
+        sta VIC_SPRITE_COL + 5      ; sprite 5 colour = $D02C
+
+        lda SPARX3_X
+        jsr CALC_SPRITE_X
+        sta VIC_SPRITE_X0 + 10      ; sprite 5 X = $D00A
+        bcc @no_msb
+        lda VIC_SPRITE_MSB
+        ora #$20
+        sta VIC_SPRITE_MSB
+@no_msb:
+        lda SPARX3_Y
+        asl
+        asl
+        asl
+        clc
+        adc #50                     ; Standard C64 Y offset
+        sta VIC_SPRITE_X0 + 11      ; sprite 5 Y = $D00B
+        rts
+
+SPARX3_COLORS: !byte COL_YELLOW, COL_WHITE, COL_GREEN
 
 ; ============================================================================
 ; INIT LEVEL WITH BACKGROUND CHECK
