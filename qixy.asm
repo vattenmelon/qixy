@@ -163,6 +163,9 @@ QIX2_Y_LO       = $C5F4     ; Y fraction
 QIX2_Y_HI       = $C5F5     ; Y tile row
 QIX2_DX         = $C5F6     ; signed X velocity (1/256 tile/frame)
 QIX2_DY         = $C5F7     ; signed Y velocity (1/256 tile/frame)
+QIX2_EXPLODE    = $C5F8     ; >0 = exploding (countdown frames); 0 = flying/dead
+
+QIX2_EXPLODE_FRAMES = 24    ; Duration of the trapped-Qix explosion animation
 
 ; Saved Qix position for fill operation (captures position at claim start)
 FILL_QIX_X      = $3F       ; Qix X when fill started
@@ -213,9 +216,11 @@ VIC_CTRL1       = $D011
 VIC_RASTER      = $D012
 VIC_SPRITE_EN   = $D015
 VIC_CTRL2       = $D016
+VIC_SPRITE_EXPY = $D017
 VIC_MEMSETUP    = $D018
 VIC_IRQ         = $D019
 VIC_SPRITE_PRI  = $D01B
+VIC_SPRITE_EXPX = $D01D
 VIC_BORDER      = $D020
 VIC_BGCOLOR     = $D021
 VIC_SPRITE_COL  = $D027
@@ -1885,6 +1890,9 @@ FINISH_FILL:
         ; Clear fill state
         lda #0
         sta FILL_STATE
+
+        ; A second Qix sealed inside freshly claimed territory is trapped: blow it up
+        jsr CHECK_QIX2_TRAPPED
 
         ; Advance fill color for next area
         inc FILL_COLOR_IDX
@@ -4853,6 +4861,16 @@ UPDATE_QIX2:
         bne +
         rts
 +
+        ; Exploding? Hold position, run the countdown, then remove the Qix.
+        lda QIX2_EXPLODE
+        beq @move
+        dec QIX2_EXPLODE
+        bne @exp_done
+        jsr DEACTIVATE_QIX2     ; animation finished -> Qix is gone
+@exp_done:
+        rts
+
+@move:
         ; Move one axis at a time, testing the DESTINATION tile before entering
         ; it. The Qix may only occupy empty/unclaimed tiles, so it bounces off
         ; the border, drawn trails/corners AND claimed territory. Axis-separated
@@ -4948,6 +4966,10 @@ INIT_QIX2:
         ; COPY_SPRITES_TO_BANK1; the live sprite-4 pointer at GAMEPLAY_SCREEN+$3FC
         ; selects the one matching the current heading (QIX2_SET_ORIENTATION).
 
+        ; Never inherit a half-finished explosion from the previous level
+        lda #0
+        sta QIX2_EXPLODE
+
         ; Only active from level 6 onwards
         lda LEVEL
         cmp #6
@@ -5037,6 +5059,18 @@ DRAW_QIX2_SPRITE:
         clc
         adc #50                     ; Standard C64 Y offset
         sta VIC_SPRITE_Y0 + 8       ; sprite 4 Y = $D009
+
+        ; Trapped and exploding? Draw the burst frame instead of the triangle.
+        lda QIX2_EXPLODE
+        bne @explode
+
+        ; --- normal triangle: single-size, green/white flash ---
+        lda VIC_SPRITE_EXPX
+        and #$EF
+        sta VIC_SPRITE_EXPX
+        lda VIC_SPRITE_EXPY
+        and #$EF
+        sta VIC_SPRITE_EXPY
         ; Flash between green and white (toggles every 8 frames)
         lda FRAME_COUNT
         and #$08
@@ -5047,6 +5081,86 @@ DRAW_QIX2_SPRITE:
         lda #COL_GREEN
 @setcol:
         sta VIC_SPRITE_COL + 4      ; sprite 4 color = $D02B
+        rts
+
+@explode:
+        ; Point sprite 4 at the explosion frame and blow it up double-size
+        lda #EXPLODE_SLOT
+        sta GAMEPLAY_SCREEN + $3FC
+        lda VIC_SPRITE_EXPX
+        ora #$10
+        sta VIC_SPRITE_EXPX
+        lda VIC_SPRITE_EXPY
+        ora #$10
+        sta VIC_SPRITE_EXPY
+        ; Hot flicker: white strobe over a red->orange->yellow fade as it dies
+        lda FRAME_COUNT
+        and #$02
+        bne @hot_white
+        lda QIX2_EXPLODE
+        lsr
+        lsr
+        lsr                         ; 0..2 over the 24-frame countdown (fades down)
+        tax
+        lda EXPLODE_COLORS, x
+        jmp @hot_set
+@hot_white:
+        lda #COL_WHITE
+@hot_set:
+        sta VIC_SPRITE_COL + 4
+        rts
+
+EXPLODE_COLORS: !byte COL_RED, COL_ORANGE, COL_YELLOW
+
+; ============================================================================
+; CHECK SECOND QIX TRAPPED (called from FINISH_FILL)
+; ============================================================================
+; After a claim, the flood fill protects the region around the MAIN Qix - the
+; second Qix is not spared. If the freshly claimed area sealed it in, its tile
+; is now solid (claimed). Detect that and kick off the explosion.
+CHECK_QIX2_TRAPPED:
+        lda QIX2_ACTIVE
+        beq @done                   ; not in play
+        lda QIX2_EXPLODE
+        bne @done                   ; already blowing up
+        ldx QIX2_X_HI
+        ldy QIX2_Y_HI
+        jsr QIX2_TILE_SOLID         ; C set = tile is solid/claimed -> trapped
+        bcc @done
+        lda #QIX2_EXPLODE_FRAMES
+        sta QIX2_EXPLODE
+        jsr SFX_QIX2_EXPLODE
+@done:  rts
+
+; Remove the second Qix once its explosion has finished.
+DEACTIVATE_QIX2:
+        lda #0
+        sta QIX2_ACTIVE
+        sta QIX2_EXPLODE
+        lda VIC_SPRITE_EN
+        and #$EF                    ; sprite 4 off
+        sta VIC_SPRITE_EN
+        lda VIC_SPRITE_EXPX
+        and #$EF                    ; clear double-size
+        sta VIC_SPRITE_EXPX
+        lda VIC_SPRITE_EXPY
+        and #$EF
+        sta VIC_SPRITE_EXPY
+        rts
+
+; Explosion sound - noise burst on voice 3 (the drum voice). Short and punchy;
+; the music engine re-gates voice 3 on the next beat, so it stays a one-shot.
+SFX_QIX2_EXPLODE:
+        lda #$00
+        sta SID_FREQ_LO3
+        lda #$30
+        sta SID_FREQ_HI3
+        lda #$81                    ; Noise waveform, gate on
+        sta SID_CTRL3
+        lda #$0A                    ; Fast attack, medium decay
+        sta SID_AD3
+        lda #$F0                    ; High sustain, then release
+        sta SID_SR3
         rts
 
 ; ============================================================================
@@ -5296,6 +5410,8 @@ CLAIM_COLORS:
 GAMEPLAY_BITMAP = $4000     ; 8000 bytes for hires bitmap ($4000-$5F3F)
 GAMEPLAY_SCREEN = $6000     ; Screen RAM for bitmap colors ($6000-$63E7)
 GAMEPLAY_SPRITES = $6400    ; Sprite data in Bank 1 (after screen)
+; Sprite pointer slots: triangles 148-155, explosion burst 156 ($6700)
+EXPLODE_SLOT     = (GAMEPLAY_SPRITES - $4000) / 64 + 4 + 8
 
 ; Enable HIRES bitmap mode for gameplay
 ; VIC Bank 1 ($4000-$7FFF), hires bitmap mode
@@ -5622,6 +5738,14 @@ COPY_SPRITES_TO_BANK1:
         sta GAMEPLAY_SPRITES + 512, x
         inx
         bne @cpdir
+
+        ; Install the explosion burst frame into slot 156 ($6700)
+        ldx #0
+@cpexp: lda QIX2_EXPLODE_SPRITE, x
+        sta GAMEPLAY_SPRITES + 768, x
+        inx
+        cpx #64
+        bne @cpexp
         rts
 
 ; Pick the triangle facing the current heading and point sprite 4 at it.
@@ -6816,6 +6940,32 @@ QIX2_SPRITE_DIRS:
         !byte $07,$F8,$00
         !byte $03,$F8,$00
         !byte $01,$F8,$00
+        !byte $00          ; pad to 64 bytes
+
+; Explosion burst (slot 156) - a jagged star, drawn double-size when a trapped
+; second Qix detonates. 24x21, 64 bytes.
+QIX2_EXPLODE_SPRITE:
+        !byte $00,$18,$00
+        !byte $08,$3C,$10
+        !byte $0C,$7E,$30
+        !byte $06,$FF,$60
+        !byte $03,$FF,$C0
+        !byte $19,$FF,$98
+        !byte $0D,$FF,$B0
+        !byte $07,$FF,$E0
+        !byte $7F,$FF,$FE
+        !byte $FF,$FF,$FF
+        !byte $FF,$FF,$FF
+        !byte $7F,$FF,$FE
+        !byte $07,$FF,$E0
+        !byte $0D,$FF,$B0
+        !byte $19,$FF,$98
+        !byte $03,$FF,$C0
+        !byte $06,$FF,$60
+        !byte $0C,$7E,$30
+        !byte $08,$3C,$10
+        !byte $00,$18,$00
+        !byte $00,$00,$00
         !byte $00          ; pad to 64 bytes
 
 ; ============================================================================
