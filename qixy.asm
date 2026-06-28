@@ -4303,10 +4303,10 @@ SAVE_HISCORES:
         bne @msg
 @msg_done:
 
-        ; Set filename: "QIXY-HISCORE"
-        lda #12                 ; Length of filename
-        ldx #<HS_FILENAME
-        ldy #>HS_FILENAME
+        ; Set filename: "@:QIXY-HISCORE" (@: = save-with-replace/overwrite)
+        lda #14                 ; Length of filename (incl. "@:" prefix)
+        ldx #<HS_SAVENAME
+        ldy #>HS_SAVENAME
         jsr $FFBD               ; SETNAM
 
         ; Set file params: LA=1, device=8, SA=0
@@ -4459,6 +4459,8 @@ HSTABLE_COPY:
         !byte 0
 
 ; Save high score text strings
+HS_SAVENAME:
+        !pet "@:"               ; Save-with-replace prefix (overwrite existing)
 HS_FILENAME:
         !pet "qixy-hiscore"      ; Filename in PETSCII
 
