@@ -3296,7 +3296,7 @@ UPDATE_LEVEL_DONE:
         ; Next level
         inc LEVEL
         lda LEVEL
-        cmp #10
+        cmp #11             ; allow up to level 10, then wrap to 1
         bcc @ok
         lda #1
         sta LEVEL
@@ -5673,6 +5673,10 @@ INIT_LEVEL_BG:
         lda LEVEL
         cmp #2
         beq @lvl2
+        cmp #4
+        beq @lvl4
+        cmp #10
+        beq @lvl10
         ; Any non-level-2 level: fully wipe the gameplay bitmap AND its colour
         ; RAM before drawing. DRAW_PLAYFIELD's CLEAR_BITMAP_CELL only zeroes the
         ; 8 bitmap bytes per cell; it does NOT touch colour RAM, so the non-black
@@ -5685,6 +5689,14 @@ INIT_LEVEL_BG:
 @lvl2:
         jsr INIT_LEVEL
         jsr OVERLAY_LEVEL2_BG
+        rts
+@lvl4:
+        jsr INIT_LEVEL
+        jsr OVERLAY_LEVEL4_BG
+        rts
+@lvl10:
+        jsr INIT_LEVEL
+        jsr DECOMPRESS_LEVEL10_BG
         rts
 
 ; ============================================================================
@@ -5699,6 +5711,9 @@ INIT_LEVEL_BG:
 
 BG_ROW = $C300
 BG_COL = $C301
+RLE_RUN = $C302         ; level-10 RLE: bytes left in current run
+RLE_LIT = $C303         ; level-10 RLE: bytes left in current literal block
+RLE_VAL = $C304         ; level-10 RLE: current run value
 
 OVERLAY_LEVEL2_BG:
         ; Bank out BASIC ROM so we can read data in $A000-$BFFF region
@@ -5878,6 +5893,395 @@ OVERLAY_LEVEL2_BG:
         sta $01
         cli
         rts
+
+; ============================================================================
+; OVERLAY LEVEL 4 BACKGROUND
+; ============================================================================
+; Like OVERLAY_LEVEL2_BG, but the source data (LEVEL4_BITMAP/LEVEL4_SCREEN) is
+; stored PACKED over the interior rectangle only (stride = 36 cells), because
+; there is not enough free RAM below the $C000 buffers for a full 8000-byte
+; screen. The destination is still the standard 40-wide gameplay layout.
+;
+;   interior cell (r,c) with r = row - (FIELD_TOP+1), c = col - (FIELD_LEFT+1)
+;   source offset = (r*36 + c) * 8       into LEVEL4_BITMAP / LEVEL4_SCREEN
+;   dest   offset = (row*40 + col) * 8   into GAMEPLAY_BITMAP
+;
+; Uses BG_ROW/BG_COL, TEMP1-4, SCREEN_LO/HI, COLOR_LO/HI as scratch.
+
+L4_IW = 36                      ; interior width in cells
+
+OVERLAY_LEVEL4_BG:
+        ; Bank out BASIC ROM so we can read data in the $A000-$BFFF region
+        sei
+        lda $01
+        pha
+        and #%11111110
+        sta $01
+
+        lda #FIELD_TOP + 1
+        sta BG_ROW
+@row_loop:
+        lda #FIELD_LEFT + 1
+        sta BG_COL
+@col_loop:
+        ; ---------------------------------------------------------------
+        ; Destination offset = (BG_ROW*40 + BG_COL) * 8  ->  COLOR_LO/HI
+        ; ---------------------------------------------------------------
+        lda BG_ROW
+        asl
+        asl
+        asl                     ; row*8 (low)
+        sta SCREEN_LO
+        lda #0
+        sta SCREEN_HI
+        lda BG_ROW
+        asl
+        asl
+        asl
+        asl
+        asl                     ; (row*32) mod 256
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        lda #0
+        adc #0                  ; carry from low add
+        sta SCREEN_HI
+        lda BG_ROW
+        lsr
+        lsr
+        lsr                     ; row>>3 = high byte of row*32
+        clc
+        adc SCREEN_HI
+        sta SCREEN_HI           ; SCREEN = row*40
+        lda BG_COL
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       asl SCREEN_LO
+        rol SCREEN_HI
+        asl SCREEN_LO
+        rol SCREEN_HI
+        asl SCREEN_LO
+        rol SCREEN_HI           ; *8 = byte offset
+        lda SCREEN_LO
+        clc
+        adc #<GAMEPLAY_BITMAP
+        sta COLOR_LO
+        lda SCREEN_HI
+        adc #>GAMEPLAY_BITMAP
+        sta COLOR_HI
+
+        ; ---------------------------------------------------------------
+        ; Source offset = ((BG_ROW-4)*36 + (BG_COL-2)) * 8 -> SCREEN_LO/HI
+        ; ---------------------------------------------------------------
+        lda BG_ROW
+        sec
+        sbc #FIELD_TOP + 1      ; r
+        sta TEMP1
+        asl
+        asl                     ; r*4 (r<=18 -> <=72, fits low byte)
+        sta SCREEN_LO
+        lda #0
+        sta SCREEN_HI
+        lda TEMP1
+        asl
+        asl
+        asl
+        asl
+        asl                     ; (r*32) mod 256
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        lda #0
+        adc #0
+        sta SCREEN_HI
+        lda TEMP1
+        lsr
+        lsr
+        lsr                     ; r>>3 = high byte of r*32
+        clc
+        adc SCREEN_HI
+        sta SCREEN_HI           ; SCREEN = r*36
+        lda BG_COL
+        sec
+        sbc #FIELD_LEFT + 1     ; c
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       asl SCREEN_LO
+        rol SCREEN_HI
+        asl SCREEN_LO
+        rol SCREEN_HI
+        asl SCREEN_LO
+        rol SCREEN_HI           ; *8 = byte offset
+        lda SCREEN_LO
+        clc
+        adc #<LEVEL4_BITMAP
+        sta SCREEN_LO
+        lda SCREEN_HI
+        adc #>LEVEL4_BITMAP
+        sta SCREEN_HI
+
+        ; Copy 8 bytes (one cell) source -> dest
+        ldy #0
+-       lda (SCREEN_LO), y
+        sta (COLOR_LO), y
+        iny
+        cpy #8
+        bne -
+
+        ; ---------------------------------------------------------------
+        ; Colour: read packed LEVEL4_SCREEN[(r*36)+c], write via SET_BITMAP_COLOR
+        ; ---------------------------------------------------------------
+        lda BG_ROW
+        sec
+        sbc #FIELD_TOP + 1      ; r
+        sta TEMP1
+        asl
+        asl                     ; r*4
+        sta SCREEN_LO
+        lda #0
+        sta SCREEN_HI
+        lda TEMP1
+        asl
+        asl
+        asl
+        asl
+        asl                     ; (r*32) mod 256
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        lda #0
+        adc #0
+        sta SCREEN_HI
+        lda TEMP1
+        lsr
+        lsr
+        lsr                     ; r>>3
+        clc
+        adc SCREEN_HI
+        sta SCREEN_HI           ; r*36
+        lda BG_COL
+        sec
+        sbc #FIELD_LEFT + 1     ; c
+        clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       lda SCREEN_LO
+        clc
+        adc #<LEVEL4_SCREEN
+        sta SCREEN_LO
+        lda SCREEN_HI
+        adc #>LEVEL4_SCREEN
+        sta SCREEN_HI
+        ldy #0
+        lda (SCREEN_LO), y      ; A = colour nibble byte
+        ldx BG_COL
+        ldy BG_ROW
+        jsr SET_BITMAP_COLOR
+
+        ; Next column
+        inc BG_COL
+        lda BG_COL
+        cmp #FIELD_RIGHT
+        beq @col_done
+        jmp @col_loop
+@col_done:
+
+        ; Next row
+        inc BG_ROW
+        lda BG_ROW
+        cmp #FIELD_BOTTOM
+        beq @row_done
+        jmp @row_loop
+@row_done:
+
+        pla
+        sta $01
+        cli
+        rts
+
+; ============================================================================
+; LEVEL 10 BACKGROUND - RLE-decompress straight into the playfield interior
+; ============================================================================
+; The level-10 background is stored RLE-compressed (LEVEL10_RLE, ~1.3KB) because
+; there is no room for a second uncompressed background below the $C000 buffers.
+; We expand it on the fly, writing each interior cell directly to the gameplay
+; bitmap ($4000) and screen colour RAM ($6000) - no large scratch buffer needed.
+;
+; Stream layout (same packed order as OVERLAY_LEVEL4_BG): 8 bitmap bytes per
+; interior cell for all 36x19 cells, then one colour byte per cell.
+;
+; SCREEN_LO/HI = RLE source pointer (kept across the whole routine)
+; COLOR_LO/HI  = current destination pointer
+; TEMP1/TEMP2  = scratch (row*40+col), via CALC_ROWCOL
+; LEVEL10_RLE lives at $C700 (plain RAM, no ROM banking needed).
+
+DECOMPRESS_LEVEL10_BG:
+        sei
+        lda #<LEVEL10_RLE
+        sta SCREEN_LO
+        lda #>LEVEL10_RLE
+        sta SCREEN_HI
+        lda #0
+        sta RLE_RUN
+        sta RLE_LIT
+
+        ; ---- bitmap phase: 8 bytes per interior cell ----
+        lda #FIELD_TOP + 1
+        sta BG_ROW
+@brow:  lda #FIELD_LEFT + 1
+        sta BG_COL
+@bcol:  jsr CALC_ROWCOL             ; TEMP1/2 = row*40 + col
+        lda TEMP1                   ; dest = $4000 + (offset * 8)
+        asl
+        sta COLOR_LO
+        lda TEMP2
+        rol
+        sta COLOR_HI
+        asl COLOR_LO
+        rol COLOR_HI
+        asl COLOR_LO
+        rol COLOR_HI
+        lda COLOR_HI
+        clc
+        adc #>GAMEPLAY_BITMAP
+        sta COLOR_HI
+        ldx #8
+@b8:    jsr GET_RLE_BYTE
+        ldy #0
+        sta (COLOR_LO), y
+        inc COLOR_LO
+        bne +
+        inc COLOR_HI
++       dex
+        bne @b8
+        inc BG_COL
+        lda BG_COL
+        cmp #FIELD_RIGHT
+        bne @bcol
+        inc BG_ROW
+        lda BG_ROW
+        cmp #FIELD_BOTTOM
+        bne @brow
+
+        ; ---- colour phase: 1 byte per interior cell ----
+        lda #FIELD_TOP + 1
+        sta BG_ROW
+@crow:  lda #FIELD_LEFT + 1
+        sta BG_COL
+@ccol:  jsr CALC_ROWCOL             ; TEMP1/2 = row*40 + col
+        lda TEMP1                   ; dest = $6000 + offset
+        clc
+        adc #<GAMEPLAY_SCREEN
+        sta COLOR_LO
+        lda TEMP2
+        adc #>GAMEPLAY_SCREEN
+        sta COLOR_HI
+        jsr GET_RLE_BYTE
+        ldy #0
+        sta (COLOR_LO), y
+        inc BG_COL
+        lda BG_COL
+        cmp #FIELD_RIGHT
+        bne @ccol
+        inc BG_ROW
+        lda BG_ROW
+        cmp #FIELD_BOTTOM
+        bne @crow
+
+        cli
+        rts
+
+; Compute BG_ROW*40 + BG_COL into TEMP1 (low) / TEMP2 (high). Uses A only,
+; preserves X/Y and the SCREEN_LO/HI RLE pointer.
+CALC_ROWCOL:
+        lda BG_ROW
+        asl
+        asl
+        asl                         ; row*8
+        sta TEMP1
+        lda #0
+        sta TEMP2
+        lda BG_ROW
+        asl
+        asl
+        asl
+        asl
+        asl                         ; (row*32) mod 256
+        clc
+        adc TEMP1
+        sta TEMP1
+        lda #0
+        adc #0
+        sta TEMP2
+        lda BG_ROW
+        lsr
+        lsr
+        lsr                         ; row>>3 = high byte of row*32
+        clc
+        adc TEMP2
+        sta TEMP2                   ; TEMP = row*40
+        lda BG_COL
+        clc
+        adc TEMP1
+        sta TEMP1
+        bcc +
+        inc TEMP2
++       rts
+
+; Return next decompressed byte in A. Source pointer = SCREEN_LO/HI.
+; Preserves X; clobbers Y. RLE control byte: bit7 set = run ($80|count then one
+; value byte); bit7 clear = literal block (count then 'count' verbatim bytes).
+GET_RLE_BYTE:
+        ldy #0
+        lda RLE_RUN
+        beq @chklit
+        dec RLE_RUN                 ; still inside a run
+        lda RLE_VAL
+        rts
+@chklit:
+        lda RLE_LIT
+        beq @ctrl
+        dec RLE_LIT                 ; still inside a literal block
+        lda (SCREEN_LO), y
+        inc SCREEN_LO
+        bne +
+        inc SCREEN_HI
++       rts
+@ctrl:
+        lda (SCREEN_LO), y          ; fetch a control byte
+        pha
+        inc SCREEN_LO
+        bne +
+        inc SCREEN_HI
++       pla
+        bpl @lit
+        ; run
+        and #$7F
+        sta RLE_RUN
+        lda (SCREEN_LO), y
+        inc SCREEN_LO
+        bne +
+        inc SCREEN_HI
++       sta RLE_VAL
+        dec RLE_RUN                 ; this call returns the first copy
+        lda RLE_VAL
+        rts
+@lit:
+        sta RLE_LIT
+        dec RLE_LIT                 ; this call returns the first literal byte
+        lda (SCREEN_LO), y
+        inc SCREEN_LO
+        bne +
+        inc SCREEN_HI
++       rts
 
 ; Copy sprite data from Bank 0 ($2800) to Bank 1 ($6400)
 COPY_SPRITES_TO_BANK1:
@@ -7146,6 +7550,23 @@ QIX2_EXPLODE_SPRITE:
 ; ============================================================================
 
 !source "level2_bg.asm"
+
+; ============================================================================
+; LEVEL 4 BACKGROUND BITMAP DATA (interior only, packed 36x19 cells)
+; ============================================================================
+
+!source "level4_bg.asm"
+
+; ============================================================================
+; LEVEL 10 BACKGROUND BITMAP DATA (RLE-compressed, decompressed at level start)
+; ============================================================================
+; Placed at $C700 - above the runtime buffers ($C000-$C2FF), the RLE scratch
+; ($C300-$C304) and the high-score table ($C600-$C63B), below I/O ($D000).
+; The gap from the end of level-4 data up to $C700 is zero-filled in the .prg;
+; that region is all runtime-initialised RAM, so the load-time zeros are benign.
+
+* = $C700
+!source "level10_bg.asm"
 
 ; ============================================================================
 ; END
