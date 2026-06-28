@@ -49,6 +49,7 @@ make clean
 - `$C080-$C0FF`: Trail buffer Y coordinates
 - `$C100-$C1FF`: Flood fill stack X (256 entries)
 - `$C200-$C2FF`: Flood fill stack Y (256 entries)
+- `$C320-$C5EF`: Machine-detection + C128-acceleration module (code/data placed in the zero-fill RAM gap above the runtime buffers; costs no `.prg` bytes and is squeezed away by the disk cruncher)
 - `$C600-$C63B`: High score table (5 entries, 12 bytes each)
 
 ### Title Screen (VIC Bank 1)
@@ -105,12 +106,22 @@ Game state controlled by GAME_STATE variable (`$1C`):
 - **Audio**: SID chip sound effects with music state machine (normal and sad/game-over modes)
 - **Scoring**: Multi-byte score tracking with percentage-based level progression (75% target)
 - **High scores**: Persistent high score table with name entry (5 entries stored at `$C600`)
+- **Machine detection** (`DETECT_MACHINE`, runs once at startup): identifies the host and stores the result in `MACHINE_TYPE`/`VIDEO_STD`, shown as a line under the high-score credits (e.g. `C128 - PAL`):
+  - **Video standard**: PAL vs NTSC via VIC raster-line count
+  - **C64 vs C128**: the VIC-IIe extra registers `$D02F`/`$D030` read `$FF` on a plain C64; both must be implemented to read as a C128
+  - **Ultimate**: the UCI identification register `$DF1D` reads `$C9` (open-bus `$DF` on a real C64). A bounded UCI `GET_HWINFO` handshake (`$04 $28 $00`) then reads the ASCII model name and scans for "64" to tell an Ultimate 64 from an Ultimate-II+ cartridge
 
 ### Performance Considerations
-- Fill operations run incrementally (`FLOOD_OPS_PER_FRAME = 8`, `SCAN_OPS_PER_FRAME = 32`)
+- Fill operations run incrementally; the per-frame op counts are runtime variables (`FLOOD_OPS`/`SCAN_OPS`) seeded each boot from the C64 defaults (`FLOOD_OPS_PER_FRAME = 8`, `SCAN_OPS_PER_FRAME = 32`)
 - Fill state machine has 6 phases: inactive, trail conversion, flood fill, claim, restore, calculate percentage
 - Keeps game responsive during expensive flood-fill calculations
 - Tuned for ~20000 cycles per frame on C64 hardware
+
+### C128 2 MHz Acceleration
+When `DETECT_MACHINE` finds a C128, `INIT_CPU_SPEED` enables it (gated entirely on `MACHINE_TYPE == 1`; C64/Ultimate hosts are byte-for-byte unchanged):
+- **Clean 2 MHz**: a raster IRQ (`IRQ_C128_RASTER`, chained in front of the KERNAL handler via `$0314`) switches the CPU to 2 MHz over the border/vertical-blank and back to 1 MHz for the visible display. 2 MHz during active display corrupts the VIC-II picture, so it is only used where the VIC is not fetching (lines `RASTER_2MHZ_ON = 251` .. `RASTER_2MHZ_OFF = 40`). CIA interrupts pass through to the KERNAL, so keyboard/jiffy are unaffected.
+- **Faster fills**: the reclaimed ~1/3-frame of CPU is spent on higher incremental-fill rates (`C128_FLOOD_OPS = 128`, `C128_SCAN_OPS = 224`) so territory claims complete in a few frames. These two constants are the dial — lower them if a real C128 hitches during large claims at high levels.
+- Note: assumes the SID stays clocked at ~1 MHz on the C128 in fast mode (consensus; why C128 BASIC `FAST` keeps sound correct). The 2 MHz effect itself needs a real C128 to confirm — VICE's x64sc has no VIC-IIe 2 MHz mode.
 
 ## Important Editing Guidelines
 

@@ -186,6 +186,13 @@ FILL_QIX_Y      = $40       ; Qix Y when fill started
 ; C64 has ~20000 cycles per frame, these values keep it smooth
 FLOOD_OPS_PER_FRAME = 8     ; Stack operations for flood fill
 SCAN_OPS_PER_FRAME = 32     ; Tiles for scan phases
+; C128 rates: the 2 MHz border IRQ buys ~1/3 of a frame, so push the
+; incremental fill near the practical ceiling (one 8-bit ldx loop per phase,
+; one phase per frame). Flood ops are heaviest and the stack is 256 deep, so
+; 128 drains it in ~2 frames; scan ops are cheaper so they run nearer the top.
+; Dial these down if a real C128 hitches during large claims at high levels.
+C128_FLOOD_OPS = 128
+C128_SCAN_OPS  = 224
 
 ; ============================================================================
 ; MEMORY BUFFERS (Safe locations above BASIC)
@@ -341,6 +348,7 @@ START:
         jsr INIT_SPRITES
         jsr INIT_SID
         jsr DETECT_MACHINE      ; Detect host: PAL/NTSC, C64/C128, Ultimate
+        jsr INIT_CPU_SPEED      ; On C128: 2 MHz in border + faster fills
         jsr INIT_HISCORE_TABLE  ; Initialize high score table
         jsr LOAD_HISCORES       ; Try to load saved high scores from disk
         jsr INIT_MUSIC          ; Start the Miami Vice beat!
@@ -1862,7 +1870,7 @@ UPDATE_FILL:
 
 ; Incremental trail conversion - convert trail tiles to claimed
 UPDATE_TRAIL_CONVERT:
-        ldx #SCAN_OPS_PER_FRAME
+        ldx SCAN_OPS
 @loop:
         ; Check if done with trail
         lda FILL_INDEX
@@ -2030,7 +2038,7 @@ INIT_FLOOD_FROM_QIX:
 
 ; Incremental flood fill - process FILL_OPS_PER_FRAME stack operations per frame
 UPDATE_FLOOD_FILL:
-        ldx #FLOOD_OPS_PER_FRAME
+        ldx FLOOD_OPS
 @loop:
         ; Stack empty?
         lda FILL_STACK_PTR
@@ -2155,7 +2163,7 @@ POP_FILL:
 
 ; Incremental claim - process FILL_OPS_PER_FRAME tiles per frame
 UPDATE_CLAIM_UNMARKED:
-        ldx #SCAN_OPS_PER_FRAME
+        ldx SCAN_OPS
 @loop:
         ; Save iteration counter
         stx TEMP4
@@ -2248,7 +2256,7 @@ UPDATE_CLAIM_UNMARKED:
 
 ; Incremental restore - process FILL_OPS_PER_FRAME tiles per frame
 UPDATE_RESTORE_MARKED:
-        ldx #SCAN_OPS_PER_FRAME
+        ldx SCAN_OPS
 @loop:
         ; Save iteration counter
         stx TEMP4
@@ -2309,7 +2317,7 @@ UPDATE_RESTORE_MARKED:
 
 ; Incremental calc percentage - process FILL_OPS_PER_FRAME tiles per frame
 UPDATE_CALC_PERCENTAGE:
-        ldx #SCAN_OPS_PER_FRAME
+        ldx SCAN_OPS
 @loop:
         ; Save iteration counter
         stx TEMP4
@@ -7612,7 +7620,7 @@ QIX2_EXPLODE_SPRITE:
 ;
 ; MACHINE_TYPE: 0=C64  1=C128  2=Ultimate 64  3=Ultimate-II+  4=Ultimate (?)
 ; ============================================================================
-* = $C380
+* = $C320
 
 MACHINE_TYPE:   !byte 0         ; 0 = C64, 1 = C128, 2 = Ultimate
 VIDEO_STD:      !byte 0         ; 0 = NTSC, 1 = PAL
@@ -7752,6 +7760,91 @@ DETECT_ULTIMATE_MODEL:
         lda #2
         sta MACHINE_TYPE
         rts
+
+; ----------------------------------------------------------------------------
+; C128 2 MHz acceleration. The VIC-IIe can clock the CPU at 2 MHz, but only
+; while it is not fetching video data - 2 MHz over the active display corrupts
+; the 40-column picture (this is why C128 BASIC's FAST blanks it). So a raster
+; IRQ runs 2 MHz through the border + vertical blank and drops back to 1 MHz for
+; the visible area, keeping the picture clean while reclaiming ~1/3 of each
+; frame. Those cycles are spent on a higher incremental-fill rate so territory
+; claims finish faster. C64/Ultimate hosts keep 1 MHz and the original op
+; counts - this entire path is gated on MACHINE_TYPE == C128.
+; ----------------------------------------------------------------------------
+RASTER_2MHZ_ON  = 251           ; first bottom-border line -> switch to 2 MHz
+RASTER_2MHZ_OFF = 40            ; above the first badline  -> back to 1 MHz
+
+FLOOD_OPS:  !byte FLOOD_OPS_PER_FRAME    ; runtime flood-fill ops per frame
+SCAN_OPS:   !byte SCAN_OPS_PER_FRAME     ; runtime scan ops per frame
+OLD_IRQ_LO: !byte 0                      ; saved KERNAL IRQ vector ($0314/$0315)
+OLD_IRQ_HI: !byte 0
+
+INIT_CPU_SPEED:
+        php
+        sei
+        lda #FLOOD_OPS_PER_FRAME         ; defaults: C64 / Ultimate unchanged
+        sta FLOOD_OPS
+        lda #SCAN_OPS_PER_FRAME
+        sta SCAN_OPS
+        lda MACHINE_TYPE
+        cmp #1
+        bne @done                        ; not a C128 -> stay at 1 MHz
+        lda #C128_FLOOD_OPS              ; spend the reclaimed C128 cycles
+        sta FLOOD_OPS
+        lda #C128_SCAN_OPS
+        sta SCAN_OPS
+        ; chain a raster IRQ in front of the existing KERNAL handler
+        lda $0314
+        sta OLD_IRQ_LO
+        lda $0315
+        sta OLD_IRQ_HI
+        lda #<IRQ_C128_RASTER
+        sta $0314
+        lda #>IRQ_C128_RASTER
+        sta $0315
+        lda $d011
+        and #$7f                         ; raster compare bit 8 = 0 (lines < 256)
+        sta $d011
+        lda #RASTER_2MHZ_ON
+        sta $d012
+        lda #$01
+        sta $d01a                        ; enable VIC raster IRQ (alongside CIA)
+        sta $d019                        ; clear any pending raster latch
+@done:  plp
+        rts
+
+; Raster IRQ: flips 2 MHz on/off at the two display edges. Non-raster (CIA)
+; interrupts are passed straight through to the original KERNAL handler, so
+; keyboard scanning and the jiffy clock keep working exactly as before.
+IRQ_C128_RASTER:
+        lda $d019
+        and #$01
+        beq @chain                       ; not the raster source -> KERNAL
+        sta $d019                        ; ack the raster latch (A = $01)
+        lda $d012
+        cmp #100                         ; ~40 vs ~251 : which edge fired?
+        bcc @go_1mhz
+        lda $d030                        ; bottom border -> 2 MHz on
+        ora #$01
+        sta $d030
+        lda #RASTER_2MHZ_OFF
+        sta $d012
+        jmp @exit
+@go_1mhz:
+        lda $d030                        ; top of display -> 1 MHz
+        and #$fe
+        sta $d030
+        lda #RASTER_2MHZ_ON
+        sta $d012
+@exit:
+        pla                              ; restore A/X/Y saved by the KERNAL entry
+        tay
+        pla
+        tax
+        pla
+        rti
+@chain:
+        jmp (OLD_IRQ_LO)
 
 ; ----------------------------------------------------------------------------
 ; Draw "<machine> - <video>" centred on row 23 of the high-score screen.

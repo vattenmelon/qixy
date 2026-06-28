@@ -114,7 +114,7 @@ SYS 2064
 
 ## Technical Details
 
-- **Platform**: Commodore 64 (PAL/NTSC compatible)
+- **Platform**: Commodore 64 (PAL/NTSC); detects and adapts to C128 (uses its 2 MHz mode) and Ultimate (U64 / U2+) hardware
 - **Language**: 6502 Assembly
 - **Graphics**: Custom character set with hardware sprites
 - **Sound**: SID chip effects
@@ -126,6 +126,7 @@ SYS 2064
 - `$2000-$27FF`: Custom character set
 - `$2800-$2BFF`: Sprite data
 - `$0400-$07E7`: Screen RAM
+- `$C320-$C5EF`: Machine-detection + C128-acceleration module
 
 ### Features
 - Smooth sprite-based player and enemies
@@ -134,6 +135,8 @@ SYS 2064
 - Multiple levels with increasing difficulty
 - Score tracking with lives system
 - Flood-fill based territory claiming
+- Detects the host (PAL/NTSC, C64/C128, Ultimate 64 / Ultimate-II+) and shows it on the high-score screen
+- Uses the C128's 2 MHz mode (in the border/vblank, where safe) for faster territory fills
 
 ## Files
 
