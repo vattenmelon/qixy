@@ -340,6 +340,7 @@ START:
         jsr INIT_CHARSET
         jsr INIT_SPRITES
         jsr INIT_SID
+        jsr DETECT_MACHINE      ; Detect host: PAL/NTSC, C64/C128, Ultimate
         jsr INIT_HISCORE_TABLE  ; Initialize high score table
         jsr LOAD_HISCORES       ; Try to load saved high scores from disk
         jsr INIT_MUSIC          ; Start the Miami Vice beat!
@@ -4218,6 +4219,9 @@ SHOW_HISCORE_TABLE:
         bne @copy
 @copy_done:
 
+        ; Show detected machine + video standard under the credits
+        jsr DISPLAY_MACHINE_LINE
+
         ; Switch to lowercase charset (char ROM at $1800)
         lda #$16
         sta VIC_MEMPTR
@@ -7578,6 +7582,299 @@ QIX2_EXPLODE_SPRITE:
 ; ============================================================================
 
 !source "level4_bg.asm"
+
+; ============================================================================
+; MACHINE / VIDEO-STANDARD DETECTION
+; ----------------------------------------------------------------------------
+; Detects the host machine - video standard (PAL/NTSC), C64 vs C128 (running in
+; C64 mode) and Ultimate devices (Ultimate-64 / 1541 Ultimate cartridge). The
+; result is stored in MACHINE_TYPE / VIDEO_STD and shown under the credits on
+; the high-score screen. Code + data live in the zero-filled RAM gap at $C400
+; (above the runtime buffers, untouched during gameplay), so it adds no .prg
+; bytes and is squeezed away by the disk cruncher.
+;
+; Detection methods (verified vs codebase64 and the Ultimate UCI docs):
+;   * PAL/NTSC : count VIC raster lines (Graham's routine). 312=PAL, 262/3=NTSC.
+;   * C128     : the VIC-IIe has extra registers $D02F/$D030 that a plain C64
+;                lacks (writes ignored, always read $FF). We require BOTH to be
+;                implemented so accelerators that only emulate $D030 (2 MHz)
+;                can't be mistaken for a C128.
+;   * Ultimate : the UCI identification register $DF1D reads $C9 ($49 when an
+;                IRQ is pending). A plain C64 reads open-bus ($DF) there, so the
+;                test never false-positives. It fires for ANY Ultimate product
+;                (only when that device's "Command Interface" is enabled in its
+;                configuration menu). To tell a true Ultimate 64 from a 1541
+;                Ultimate-II+ cartridge we then issue the UCI "GET_HWINFO"
+;                command ($04 $28 $00), which returns the ASCII model name
+;                ("ULTIMATE 64" vs "1541 ULTIMATE-II+"); if it contains "64"
+;                it's a U64, otherwise a U2/U2+ cartridge. The handshake has
+;                bounded timeouts and only runs once an Ultimate is confirmed.
+;
+; MACHINE_TYPE: 0=C64  1=C128  2=Ultimate 64  3=Ultimate-II+  4=Ultimate (?)
+; ============================================================================
+* = $C380
+
+MACHINE_TYPE:   !byte 0         ; 0 = C64, 1 = C128, 2 = Ultimate
+VIDEO_STD:      !byte 0         ; 0 = NTSC, 1 = PAL
+
+DETECT_MACHINE:
+        php
+        sei
+        ; ---- video standard: find highest raster line, take low byte AND 3 ----
+@vw0:   lda $d012
+@vw1:   cmp $d012
+        beq @vw1
+        bmi @vw0
+        and #$03                ; 3 = 312 lines (PAL); 1/2 = 262/3 lines (NTSC)
+        cmp #$03
+        bne @ntsc
+        lda #1
+        sta VIDEO_STD
+        jmp @machine
+@ntsc:  lda #0
+        sta VIDEO_STD
+@machine:
+        lda #0
+        sta MACHINE_TYPE        ; assume plain C64
+        ; ---- Ultimate device? (test before C128: the U64 also drives $D030) --
+        lda $df1d
+        and #$7f                ; fold $C9/$49 -> $49 (ignore IRQ flag in bit 7)
+        cmp #$49
+        bne @c128test
+        lda #4                  ; generic Ultimate; refined to U64/U2+ below
+        sta MACHINE_TYPE
+        jsr DETECT_ULTIMATE_MODEL
+        jmp @done
+@c128test:
+        ; ---- C128 VIC-IIe extra regs (write $00: never sets 2 MHz / TEST) ----
+        lda #$00
+        sta $d030
+        lda $d030
+        cmp #$ff
+        beq @c128no             ; reads $FF -> register absent -> real C64
+        lda #$00
+        sta $d02f
+        lda $d02f
+        cmp #$ff
+        beq @c128no             ; only one of the pair -> not a genuine VIC-IIe
+        lda #1
+        sta MACHINE_TYPE        ; both present -> C128
+@c128no:
+        lda #$00
+        sta $d030               ; restore C64-mode defaults (1 MHz, TEST off)
+        lda #$ff
+        sta $d02f
+@done:
+        plp
+        rts
+
+; ----------------------------------------------------------------------------
+; Refine a confirmed Ultimate device into U64 (type 2) vs U2/U2+ (type 3) by
+; asking the UCI "GET_HWINFO" command ($04 $28 $00) for its ASCII model name
+; and scanning it for the digits "64". Leaves the generic type 4 untouched if
+; the interface stalls or returns no data. Every wait loop is bounded so this
+; can never hang. UCI transport regs: $DF1C ctrl/status, $DF1D cmd, $DF1E data.
+; ----------------------------------------------------------------------------
+UCI_CTRL = $DF1C                ; write: control bits / read: status bits
+UCI_CMD  = $DF1D                ; write: command byte queue
+UCI_RESP = $DF1E                ; read:  response byte queue
+
+DETECT_ULTIMATE_MODEL:
+        lda #$0c                ; ABORT + CLR_ERR: force the interface to idle
+        sta UCI_CTRL
+        ; wait for idle (STATE bits 4-5 == 00), bounded ~4096 polls
+        lda #$00
+        sta TEMP1
+        lda #$10
+        sta TEMP2
+@idle:  lda UCI_CTRL
+        and #$30
+        beq @send
+        dec TEMP1
+        bne @idle
+        dec TEMP2
+        bne @idle
+        rts                     ; never idle -> bail (stay generic)
+@send:  lda #$04                ; target $04 = Control Target
+        sta UCI_CMD
+        lda #$28                ; command $28 = GET_HWINFO
+        sta UCI_CMD
+        lda #$00                ; sub-command $00 = model name
+        sta UCI_CMD
+        lda #$01                ; PUSH_CMD
+        sta UCI_CTRL
+        ; wait while Command Busy (STATE == 01 -> $10), bounded ~8192 polls
+        lda #$00
+        sta TEMP1
+        lda #$20
+        sta TEMP2
+@busy:  lda UCI_CTRL
+        and #$30
+        cmp #$10
+        bne @read
+        dec TEMP1
+        bne @busy
+        dec TEMP2
+        bne @busy
+        rts                     ; stuck busy -> bail
+@read:  ldy #$00                ; Y = previous response byte
+        ldx #$00                ; X = "saw 64" flag
+        lda #$00
+        sta TEMP3               ; bytes-read counter (0 = none yet)
+        sta TEMP1
+        lda #$08
+        sta TEMP2
+@rl:    lda UCI_CTRL
+        bpl @drained            ; bit7 (DATA_AV) clear -> queue empty
+        lda UCI_RESP            ; pop one ASCII byte (preserved by INC below)
+        inc TEMP3               ; note we read at least one byte
+        cmp #$34                ; '4' ?
+        bne @adv
+        cpy #$36                ; ...preceded by '6' ?
+        bne @adv
+        ldx #$01                ; "64" seen -> Ultimate 64
+@adv:   tay                     ; current byte becomes previous
+        dec TEMP1
+        bne @rl
+        dec TEMP2
+        bne @rl
+@drained:
+        lda #$02                ; DATA_ACC: release the interface back to idle
+        sta UCI_CTRL
+        txa
+        bne @is_u64             ; found "64"
+        lda TEMP3
+        beq @ret                ; no data at all -> keep generic type 4
+        lda #3                  ; data, but no "64" -> Ultimate-II / II+
+        sta MACHINE_TYPE
+@ret:   rts
+@is_u64:
+        lda #2
+        sta MACHINE_TYPE
+        rts
+
+; ----------------------------------------------------------------------------
+; Draw "<machine> - <video>" centred on row 23 of the high-score screen.
+; Letters are stored as screen codes $01-$1A and OR'd with $40 here so they
+; render in upper case on the lower-case charset the credit line uses.
+; ----------------------------------------------------------------------------
+DISPLAY_MACHINE_LINE:
+        jsr @mach_ptr
+        jsr @strlen
+        sty TEMP1               ; machine name length
+        jsr @vid_ptr
+        jsr @strlen
+        sty TEMP2               ; video standard length
+        ; start column = (40 - (machine + 3 + video)) / 2
+        lda TEMP1
+        clc
+        adc TEMP2
+        adc #3
+        sta TEMP3
+        lda #40
+        sec
+        sbc TEMP3
+        lsr
+        tax                     ; X = centred start column
+        jsr @mach_ptr
+        jsr @append
+        lda #$20                ; space
+        jsr @putc
+        lda #$2d                ; '-'
+        jsr @putc
+        lda #$20                ; space
+        jsr @putc
+        jsr @vid_ptr
+        jsr @append
+        rts
+
+@strlen:                        ; ptr in SCREEN_LO/HI -> Y = string length
+        ldy #0
+@sl:    lda (SCREEN_LO),y
+        beq @sld
+        iny
+        bne @sl
+@sld:   rts
+
+@append:                        ; copy (SCREEN_LO/HI) to row 23 at X, uppercased
+        ldy #0
+@ap:    lda (SCREEN_LO),y
+        beq @apd
+        cmp #$1b
+        bcs @apw
+        cmp #$01
+        bcc @apw
+        ora #$40                ; letter screen code -> upper case
+@apw:   sta SCREEN_RAM + 920,x
+        lda #COL_LGREY
+        sta COLOR_RAM + 920,x
+        inx
+        iny
+        bne @ap
+@apd:   rts
+
+@putc:                          ; A = screen code -> write at X, set colour, X++
+        sta SCREEN_RAM + 920,x
+        lda #COL_LGREY
+        sta COLOR_RAM + 920,x
+        inx
+        rts
+
+@mach_ptr:                      ; point SCREEN_LO/HI at the machine name string
+        lda MACHINE_TYPE
+        cmp #1
+        beq @mp128
+        cmp #2
+        beq @mpu64
+        cmp #3
+        beq @mpu2
+        cmp #4
+        beq @mpugen
+        lda #<HS_S_C64
+        ldy #>HS_S_C64
+        jmp @mpset
+@mp128: lda #<HS_S_C128
+        ldy #>HS_S_C128
+        jmp @mpset
+@mpu64: lda #<HS_S_U64
+        ldy #>HS_S_U64
+        jmp @mpset
+@mpu2:  lda #<HS_S_U2
+        ldy #>HS_S_U2
+        jmp @mpset
+@mpugen:
+        lda #<HS_S_UGEN
+        ldy #>HS_S_UGEN
+@mpset: sta SCREEN_LO
+        sty SCREEN_HI
+        rts
+
+@vid_ptr:                       ; point SCREEN_LO/HI at the video standard string
+        lda VIDEO_STD
+        bne @vppal
+        lda #<HS_S_NTSC
+        ldy #>HS_S_NTSC
+        jmp @vpset
+@vppal: lda #<HS_S_PAL
+        ldy #>HS_S_PAL
+@vpset: sta SCREEN_LO
+        sty SCREEN_HI
+        rts
+
+HS_S_C64:   !scr "C64"
+            !byte 0
+HS_S_C128:  !scr "C128"
+            !byte 0
+HS_S_U64:   !scr "ULTIMATE 64"
+            !byte 0
+HS_S_U2:    !scr "ULTIMATE 2+"
+            !byte 0
+HS_S_UGEN:  !scr "ULTIMATE"
+            !byte 0
+HS_S_NTSC:  !scr "NTSC"
+            !byte 0
+HS_S_PAL:   !scr "PAL"
+            !byte 0
 
 ; ============================================================================
 ; LEVEL 10 BACKGROUND BITMAP DATA (RLE-compressed, decompressed at level start)
