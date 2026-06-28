@@ -24,6 +24,9 @@ You need one of the following 6502 cross-assemblers:
 - **ACME** (recommended): https://sourceforge.net/projects/acme-crossass/
 - **64tass**: http://tass64.sourceforge.net/
 
+Optional but recommended for faster disk loading:
+- **Exomizer**: https://bitbucket.org/magli143/exomizer/wiki/Home (`brew install exomizer`)
+
 ### macOS
 ```bash
 # Install ACME via Homebrew
@@ -60,6 +63,28 @@ The easiest way to play is with the VICE emulator:
 2. Build the game (see above)
 3. Run: `x64sc qixy.prg` or `make run`
 
+### Faster Loading (Exomizer)
+
+The raw `qixy.prg` is ~50KB, and about 40% of it is zero-fill from gaps in the
+memory map (e.g. the empty RAM between the game code and the title screen at
+`$5C00`). On a real 1541 that's a ~2-minute load.
+
+If **Exomizer** is installed, the build automatically produces
+`qixy_crunched.prg` — a self-decrunching, auto-running version that is roughly
+half the size (~22KB) with the zero gaps removed:
+
+```bash
+./build.sh          # builds qixy.prg, then crunches to qixy_crunched.prg
+make crunch         # same, via make
+```
+
+The crunched file loads and decrunches in RAM in about a second, then boots
+normally — no extra steps needed. If Exomizer is not installed, the build skips
+this step and everything falls back to the raw `qixy.prg`.
+
+> `make run` injects the raw `.prg` straight into emulator RAM (already
+> instant), so crunching only affects `make rundisk` and real hardware.
+
 ### Creating a D64 Disk Image
 For use with SD2IEC, Ultimate 64, or other hardware:
 
@@ -68,7 +93,9 @@ For use with SD2IEC, Ultimate 64, or other hardware:
 make disk
 ```
 
-This creates `qixy.d64` which can be transferred to real hardware.
+This creates `qixy.d64`, which can be transferred to real hardware. When
+Exomizer is installed, the disk ships the crunched build (`qixy_crunched.prg`,
+~89 blocks instead of ~196) for the faster load described above.
 
 ### Real Commodore 64 Hardware
 1. Create the D64 disk image (see above)
@@ -111,6 +138,9 @@ SYS 2064
 ## Files
 
 - `qixy.asm` - Main source code
+- `qixy.prg` - Assembled C64 executable
+- `qixy_crunched.prg` - Exomizer-crunched, self-decrunching build (faster loading)
+- `qixy.d64` - Disk image for hardware/emulator (ships the crunched build)
 - `Makefile` - Build automation
 - `build.sh` - Shell build script
 - `README.md` - This file

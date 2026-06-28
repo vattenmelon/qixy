@@ -39,12 +39,31 @@ if [ -f "$OUTPUT" ]; then
     echo "Build successful: $OUTPUT"
     ls -la "$OUTPUT"
 
+    # Crunch with Exomizer if available. This compresses the ~50KB .prg to
+    # ~22KB AND collapses the large zero-filled memory-map gaps, roughly
+    # halving disk load time. The output self-decrunches and auto-runs.
+    CRUNCHED="qixy_crunched.prg"
+    DISKFILE="$OUTPUT"
+    if command -v exomizer &> /dev/null; then
+        echo ""
+        echo "Crunching with Exomizer..."
+        if exomizer sfx basic -o "$CRUNCHED" "$OUTPUT"; then
+            echo "Crunched: $CRUNCHED"
+            ls -la "$CRUNCHED"
+            DISKFILE="$CRUNCHED"   # ship the crunched version on the disk
+        else
+            echo "Warning: Exomizer failed; using uncrunched .prg on disk"
+        fi
+    else
+        echo "Note: Exomizer not found; skipping crunch (install: brew install exomizer)"
+    fi
+
     # Create D64 disk image if c1541 is available
     if command -v c1541 &> /dev/null; then
         echo ""
-        echo "Creating D64 disk image..."
+        echo "Creating D64 disk image (from $DISKFILE)..."
         c1541 -format "qixy,qx" d64 qixy.d64
-        c1541 -attach qixy.d64 -write "$OUTPUT" "qixy,prg"
+        c1541 -attach qixy.d64 -write "$DISKFILE" "qixy,prg"
         echo "Disk image created: qixy.d64"
     fi
 else
