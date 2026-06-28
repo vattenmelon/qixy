@@ -3079,11 +3079,10 @@ UPDATE_DYING:
         sta TRAIL_COUNT
         sta FILL_STATE          ; Clear any in-progress fill operation
 
-        ; Reset Qix position
-        lda #20
-        sta QIX_X
-        lda #13
-        sta QIX_Y
+        ; Reset Qix to centre, but only if the centre is still open. Claimed
+        ; territory persists across deaths, so a blind reset can drop the Qix
+        ; into sealed tiles and trap it (see SAFE_RESET_QIX).
+        jsr SAFE_RESET_QIX
 
         lda #1
         sta GAME_STATE
@@ -5467,6 +5466,27 @@ EXPLODE_SLOT     = (GAMEPLAY_SPRITES - $4000) / 64 + 4 + 8
 
 ; Enable HIRES bitmap mode for gameplay
 ; VIC Bank 1 ($4000-$7FFF), hires bitmap mode
+; ============================================================================
+; SAFE RESPAWN OF MAIN QIX
+; ============================================================================
+; Called from UPDATE_DYING @respawn. Normally the Qix is reset to the centre
+; tile (20,13), but claimed territory persists across deaths: if the centre has
+; been claimed, dropping the Qix there leaves it surrounded by solid tiles and
+; it bounces in place forever ("spawns trapped / on a line"). The flood fill
+; always preserves the main Qix's own region, so its pre-death QIX_X/QIX_Y is
+; guaranteed to be an empty, open tile. So: reset to centre only when the centre
+; is empty; otherwise leave the Qix where it was (a provably safe open tile).
+SAFE_RESET_QIX:
+        ldx #20                 ; centre column
+        ldy #13                 ; centre row
+        jsr GET_TILE            ; A = tile at (20,13); preserves X,Y
+        cmp #CHAR_EMPTY
+        bne @keep               ; centre is claimed/line -> keep current position
+        stx QIX_X
+        sty QIX_Y
+@keep:
+        rts
+
 ENABLE_HIRES_BITMAP_MODE:
         ; Switch to VIC Bank 1 ($4000-$7FFF)
         lda CIA2_PORTA
