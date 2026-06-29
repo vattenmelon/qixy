@@ -175,6 +175,12 @@ SPARX3_ACTIVE   = $C5FC     ; 1 = third sparx in play (level 8 and up)
 SPARX_HAND      = $C5FD     ; 0 = normal CW wall-follow, 1 = mirrored (CCW)
 SPARX3_COL_IDX  = $C5FE     ; flash colour cycle index (0..2: yellow/white/green)
 
+; Last direction the player actually walked along an edge. Drives the "turn
+; slack" / cornering assist: when the joystick asks for a turn that isn't legal
+; yet, the player keeps gliding in MOVE_DIR until the turn lines up. Single free
+; byte between SPARX3_COL_IDX and the high-score table.
+MOVE_DIR        = $C5FF     ; 0=none,1=up,2=down,3=left,4=right (committed travel dir)
+
 QIX2_EXPLODE_FRAMES = 24    ; Duration of the trapped-Qix explosion animation
 
 ; Saved Qix position for fill operation (captures position at claim start)
@@ -1085,6 +1091,7 @@ INIT_LEVEL:
         sta PLAYER_DRAWING
         sta PERCENT_CLAIMED
         sta FILL_STATE
+        sta MOVE_DIR            ; no committed travel direction yet
 
         jsr DRAW_HUD
         rts
@@ -1516,6 +1523,11 @@ UPDATE_PLAYER:
 @speed_ok:
         lda #0
         sta PLAYER_SPEED
+
+        ; Turn slack / cornering assist: may rewrite PLAYER_DIR so the player
+        ; glides to a junction instead of needing a pixel-perfect turn. Lives
+        ; in the $8000 free-RAM block to keep this code below $2000.
+        jsr APPLY_TURN_SLACK
 
         ; Need a direction to move
         lda PLAYER_DIR
@@ -7590,6 +7602,113 @@ QIX2_EXPLODE_SPRITE:
 ; ============================================================================
 
 !source "level4_bg.asm"
+
+; ============================================================================
+; TURN-SLACK / CORNERING ASSIST
+; ----------------------------------------------------------------------------
+; The player marker is locked to whole character cells, so a perpendicular turn
+; is only legal on the exact junction cell. Without help you must press the new
+; direction at precisely the right spot or the input is dropped (and worse, the
+; marker stops). This module gives the turn timing some slack: while walking an
+; edge, if the requested direction isn't legal yet, the player keeps gliding in
+; the last travelled direction (MOVE_DIR) so they coast to the junction and turn
+; the instant it lines up - the classic "pre-turn" cornering feel.
+;
+; Lives in the free RAM gap at $3B00 (above the $2C00 data tables, below the
+; title bitmap at $5C00; bank-0 RAM that the VIC - parked in bank 1 for both
+; title and gameplay - never fetches). Reached by JSR from UPDATE_PLAYER, so its
+; absolute location is irrelevant; placing it here keeps the main code block
+; below $2000. Costs no real .prg bytes (zero-fill the disk cruncher squeezes).
+; ============================================================================
+* = $3B00
+
+; --- APPLY_TURN_SLACK: pick the effective move direction for this tick --------
+; Only active while walking (not drawing) and while a direction is held. May
+; rewrite PLAYER_DIR to MOVE_DIR so the player glides toward a junction; also
+; records the committed travel direction in MOVE_DIR. Corrupts A/X/Y/TEMP1-4.
+APPLY_TURN_SLACK:
+        lda PLAYER_DRAWING
+        bne @ready              ; drawing: turns are already free, leave as-is
+        lda PLAYER_DIR
+        beq @ready              ; no input: stop, as before
+        jsr PROBE_DIR           ; A = PLAYER_DIR (requested direction)
+        beq @try_glide          ; requested dir blocked -> try to glide
+        cmp #1
+        bne @ready              ; 2 = start-draw; don't record as travel dir
+        lda PLAYER_DIR          ; legal edge step: remember as travel direction
+        sta MOVE_DIR
+        rts
+@try_glide:
+        lda MOVE_DIR
+        beq @ready              ; nothing to glide along
+        cmp PLAYER_DIR
+        beq @ready              ; same dir already proven blocked -> stop
+        jsr PROBE_DIR           ; A = MOVE_DIR; only glide onto a walkable edge
+        cmp #1
+        bne @ready              ; can't glide either -> let original code stop
+        lda MOVE_DIR            ; steer along travel direction this tick
+        sta PLAYER_DIR
+@ready: rts
+
+; --- PROBE_DIR: would a step in direction A be legal? (no side effects) -------
+; In : A = direction (1=up,2=down,3=left,4=right)
+; Out: A = 0 blocked, 1 walkable edge (border/trail/corner),
+;          2 empty + fire held (would start a draw)
+; Mirrors the not-drawing tile rules in UPDATE_PLAYER. Corrupts X/Y/TEMP1-4.
+PROBE_DIR:
+        ldx PLAYER_X            ; target = player position + delta(dir)
+        ldy PLAYER_Y
+        cmp #1
+        bne @nu
+        dey
+        jmp @have
+@nu:    cmp #2
+        bne @nd
+        iny
+        jmp @have
+@nd:    cmp #3
+        bne @nl
+        dex
+        jmp @have
+@nl:    cmp #4
+        bne @block              ; dir 0/invalid -> blocked
+        inx
+@have:
+        stx TEMP1
+        sty TEMP2
+        cpx #FIELD_LEFT         ; bounds check (same limits as @check_move)
+        bcc @block
+        cpx #FIELD_RIGHT + 1
+        bcs @block
+        cpy #FIELD_TOP
+        bcc @block
+        cpy #FIELD_BOTTOM + 1
+        bcs @block
+        jsr GET_TILE            ; X,Y still hold col,row
+        cmp #CHAR_BORDER
+        beq @edge
+        cmp #CHAR_TRAIL_H
+        beq @edge
+        cmp #CHAR_TRAIL_V
+        beq @edge
+        cmp #CHAR_CORNER_LB
+        beq @edge
+        cmp #CHAR_CORNER_RB
+        beq @edge
+        cmp #CHAR_CORNER_LT
+        beq @edge
+        cmp #CHAR_CORNER_RT
+        beq @edge
+        cmp #CHAR_EMPTY         ; empty enterable only with fire (starts a draw)
+        bne @block
+        lda FIRE_HELD
+        beq @block
+        lda #2
+        rts
+@edge:  lda #1
+        rts
+@block: lda #0
+        rts
 
 ; ============================================================================
 ; MACHINE / VIDEO-STANDARD DETECTION
