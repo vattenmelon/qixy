@@ -503,6 +503,7 @@ CHECK_CHEAT_KEY:
         sta GAME_STATE
         lda #120                ; Level-done animation timer
         sta DEATH_TIMER
+        jsr START_LEVEL_UP_FANFARE  ; same fanfare as a real level clear
         jmp @done
 
 @not_pressed:
@@ -1967,6 +1968,7 @@ FINISH_FILL:
         sta GAME_STATE
         lda #120
         sta DEATH_TIMER
+        jsr START_LEVEL_UP_FANFARE  ; play a rising fanfare over the animation
 
 @not_done:
         rts
@@ -3359,6 +3361,7 @@ UPDATE_LEVEL_DONE:
         jsr INIT_LEVEL_BG
 
         lda #1
+        sta MUSIC_ENABLED       ; resume the music engine for the new level
         sta GAME_STATE
         rts
 
@@ -3366,6 +3369,7 @@ UPDATE_LEVEL_DONE:
         ; Keep border black
         lda #COL_BLACK
         sta VIC_BORDER
+        jsr UPDATE_FANFARE      ; advance the level-up fanfare notes
         rts
 
 ; ============================================================================
@@ -7738,6 +7742,66 @@ PROBE_DIR:
 @edge:  lda #1
         rts
 @block: lda #0
+        rts
+
+; ----------------------------------------------------------------------------
+; LEVEL-UP FANFARE
+; ----------------------------------------------------------------------------
+; A short rising major arpeggio (G3-C4-E4-G4, a bugle-style "ta-da!") played on
+; voice 1 over the level-complete animation. The music engine is paused for the
+; duration so the fanfare rings clean, then resumed when the next level starts
+; (see UPDATE_LEVEL_DONE). Timing is driven entirely off DEATH_TIMER (counts
+; 120->0 during the animation) so no extra state is needed. Voice 1 keeps the
+; music bass envelope/waveform, so nothing has to be restored afterwards.
+; ----------------------------------------------------------------------------
+START_LEVEL_UP_FANFARE:
+        lda #0
+        sta MUSIC_ENABLED       ; pause the music engine for the fanfare
+        sta SID_CTRL2           ; silence voice 2 (lead) - gate off
+        sta SID_CTRL3           ; silence voice 3 (drums) - gate off
+        rts
+
+; Called each frame of the @anim phase. Each note is gated off one frame before
+; it sounds so the SID envelope re-attacks (a held gate would just glide pitch).
+UPDATE_FANFARE:
+        lda DEATH_TIMER
+        cmp #119
+        beq @off
+        cmp #112
+        beq @off
+        cmp #105
+        beq @off
+        cmp #98
+        beq @off
+        cmp #50                 ; final note: cut so it doesn't drone to level end
+        beq @off
+        cmp #118
+        beq @g3
+        cmp #111
+        beq @c4
+        cmp #104
+        beq @e4
+        cmp #97
+        beq @g4
+        rts
+@off:
+        lda #$20                ; sawtooth, gate off
+        sta SID_CTRL1
+        rts
+@g3:    ldx #27                 ; G3
+        bne @play
+@c4:    ldx #32                 ; C4
+        bne @play
+@e4:    ldx #36                 ; E4
+        bne @play
+@g4:    ldx #39                 ; G4
+@play:
+        lda NOTE_FREQ_LO, x
+        sta SID_FREQ_LO1
+        lda NOTE_FREQ_HI, x
+        sta SID_FREQ_HI1
+        lda #$21                ; sawtooth, gate on
+        sta SID_CTRL1
         rts
 
 ; ============================================================================
