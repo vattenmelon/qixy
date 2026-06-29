@@ -147,9 +147,15 @@ STRING_PTR      = $61       ; Pointer to string data (16-bit)
 STRING_PTR_HI   = $62
 GRACE_TIMER     = $63       ; Post-claim invincibility timer (frames)
 PREV_PERCENT    = $64       ; Percentage before current claim (for extra life check)
+QIX_ACC         = $65       ; Qix sub-tile movement accumulator (1/64-tile units)
 
 ; Qix speed control (not in zero page to avoid KERNAL/BASIC conflicts)
-QIX_SPEED       = $C5F0     ; Frame divisor for Qix movement (higher = slower)
+; Fixed-point speed model: QIX_SPEED is the per-frame increment added to
+; QIX_ACC in QIX_STEP_UNIT (1/64) tile units; the Qix advances one tile each
+; time the accumulator passes a full unit. This lets speed scale smoothly and
+; exceed one tile/frame (max ~2 tiles/frame). SET_QIX_SPEED seeds it per level.
+QIX_STEP_UNIT   = 64        ; Accumulator units per whole tile of Qix movement
+QIX_SPEED       = $C5F0     ; Per-frame move increment, 1/64-tile units (higher = faster)
 
 ; Second Qix (level 6+): free-flying triangle that ricochets off the borders.
 ; Position is 16-bit fixed point (high byte = tile, low byte = 1/256 fraction)
@@ -1029,8 +1035,7 @@ START_NEW_GAME:
         sta LEVEL
         lda #75
         sta TARGET_PERCENT
-        lda #6
-        sta QIX_SPEED
+        jsr SET_QIX_SPEED       ; seed Qix speed from LEVEL (set to 1 above)
 
         jsr INIT_LEVEL
 
@@ -1064,6 +1069,8 @@ INIT_LEVEL:
         sta QIX_DY
         lda #60
         sta QIX_TIMER
+        lda #0
+        sta QIX_ACC             ; reset sub-tile speed accumulator
 
         ; Second Qix (triangle) - set up / enable for level 6+, disable otherwise
         jsr INIT_QIX2
@@ -2457,15 +2464,23 @@ UPDATE_QIX:
         sta QIX_DY
 
 @no_change:
-        ; Move every QIX_SPEED-th frame
-        lda FRAME_COUNT
+        ; Accumulate sub-tile movement; QIX_SPEED is the per-frame increment in
+        ; 1/64-tile units. Step one tile per whole unit banked (max 2 per frame,
+        ; since the increment never exceeds 2 tiles' worth).
+        lda QIX_ACC
+        clc
+        adc QIX_SPEED
+        sta QIX_ACC
+        cmp #QIX_STEP_UNIT
+        bcs @step_loop          ; a whole tile banked - move
+        jmp @done               ; less than a whole tile - no move this frame
+
+@step_loop:
+        lda QIX_ACC
         sec
--       sbc QIX_SPEED
-        bcs -
-        adc QIX_SPEED   ; A = FRAME_COUNT mod QIX_SPEED
-        beq +
-        jmp @done
-+
+        sbc #QIX_STEP_UNIT
+        sta QIX_ACC
+
         ; Calculate new position
         lda QIX_X
         clc
@@ -2525,7 +2540,7 @@ UPDATE_QIX:
         adc #1
         sta QIX_DY
 
-        jmp @done
+        jmp @step_next
 
 @hit_trail:
         ; Qix hit trail - only death if it hits the CURRENT trail being drawn
@@ -2554,6 +2569,13 @@ UPDATE_QIX:
         sta QIX_X
         lda TEMP2
         sta QIX_Y
+
+@step_next:
+        ; Another whole tile still banked this frame? (only ever 0 or 1 more)
+        lda QIX_ACC
+        cmp #QIX_STEP_UNIT
+        bcc @done               ; nothing left - finish
+        jmp @step_loop          ; step the second tile
 
 @done:
         ; Animate color
@@ -3321,19 +3343,8 @@ UPDATE_LEVEL_DONE:
         lda #1
         sta LEVEL
 @ok:
-        ; Speed up Qix (25% faster each level)
-        ; New speed = speed * 3/4 (reduce by 25%)
-        lda QIX_SPEED
-        lsr             ; speed / 2
-        lsr             ; speed / 4
-        sta TEMP1       ; TEMP1 = speed / 4
-        lda QIX_SPEED
-        sec
-        sbc TEMP1       ; speed - speed/4 = speed * 3/4
-        bne @spd_ok
-        lda #1          ; minimum speed divisor of 1
-@spd_ok:
-        sta QIX_SPEED
+        ; Speed up Qix - smooth ramp from level 1 to the level-10 maximum
+        jsr SET_QIX_SPEED
 
         ; Harder target
         lda TARGET_PERCENT
@@ -4654,6 +4665,25 @@ INIT_MUSIC:
 ; All of these are reached via JSR/JMP by label, so their absolute location
 ; does not matter. Keep the running total below SPRITE_RAM ($2800).
 * = $2460
+
+; ----------------------------------------------------------------------------
+; SET_QIX_SPEED: seed QIX_SPEED (per-frame move increment, 1/64-tile units) from
+; the current LEVEL. The curve is linear in tiles/frame: level 1 keeps the old
+; start speed (~1/6 tile/frame) and level 10 reaches 1 tile/frame - matching the
+; old integer-divisor maximum, but now ramped smoothly across all ten levels
+; instead of jumping there by level 5. LEVEL is always 1..10 (wraps at 11).
+; ----------------------------------------------------------------------------
+SET_QIX_SPEED:
+        ldx LEVEL
+        dex                     ; level 1 -> table index 0
+        lda QIX_SPEED_TBL, x
+        sta QIX_SPEED
+        rts
+
+; tiles/frame * 64, linear from 11/64 (~0.17, = old level-1 speed) at level 1 up
+; to 64/64 (= 1.0, = old maximum) at level 10. ~+6 per level.
+QIX_SPEED_TBL:
+        !byte 11, 17, 23, 29, 35, 41, 47, 53, 59, 64
 
 UPDATE_MUSIC:
         lda MUSIC_ENABLED
