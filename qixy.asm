@@ -5769,34 +5769,29 @@ SPARX3_COLORS: !byte COL_YELLOW, COL_WHITE, COL_GREEN
 ; Wrapper around INIT_LEVEL that adds level 2 background overlay
 
 INIT_LEVEL_BG:
+        ; Rotate the three background images across ALL levels, by LEVEL mod 3:
+        ;   1 -> level-2 image  (levels 1, 4, 7, ...)
+        ;   2 -> level-4 image  (levels 2, 5, 8, ...)
+        ;   0 -> level-10 image (levels 3, 6, 9, ...)
+        ; Each overlay fully repaints every interior cell's bitmap AND colour
+        ; RAM, so the previous level's background is completely overwritten and
+        ; no separate CLEAR_GAMEPLAY_BITMAP pass is needed.
+        jsr INIT_LEVEL
         lda LEVEL
+@mod3:  cmp #3
+        bcc @have               ; A < 3 -> remainder in A
+        sbc #3                  ; carry set by cmp (A>=3) -> exact subtract
+        bcs @mod3               ; carry still set -> keep reducing
+@have:
+        cmp #1
+        beq @bg2
         cmp #2
-        beq @lvl2
-        cmp #4
-        beq @lvl4
-        cmp #10
-        beq @lvl10
-        ; Any non-level-2 level: fully wipe the gameplay bitmap AND its colour
-        ; RAM before drawing. DRAW_PLAYFIELD's CLEAR_BITMAP_CELL only zeroes the
-        ; 8 bitmap bytes per cell; it does NOT touch colour RAM, so the non-black
-        ; hires background nibbles written by a previous level's OVERLAY_LEVEL2_BG
-        ; would otherwise stay visible (e.g. level 2's background bleeding into
-        ; level 3). CLEAR_GAMEPLAY_BITMAP resets both, then we draw fresh.
-        jsr CLEAR_GAMEPLAY_BITMAP
-        jsr INIT_LEVEL
-        rts
-@lvl2:
-        jsr INIT_LEVEL
-        jsr OVERLAY_LEVEL2_BG
-        rts
-@lvl4:
-        jsr INIT_LEVEL
-        jsr OVERLAY_LEVEL4_BG
-        rts
-@lvl10:
-        jsr INIT_LEVEL
-        jsr DECOMPRESS_LEVEL10_BG
-        rts
+        beq @bg4
+        jmp DECOMPRESS_LEVEL10_BG   ; remainder 0 -> tail-call (ends in rts)
+@bg2:
+        jmp OVERLAY_LEVEL2_BG
+@bg4:
+        jmp OVERLAY_LEVEL4_BG
 
 ; ============================================================================
 ; OVERLAY LEVEL 2 BACKGROUND
