@@ -434,6 +434,7 @@ MAIN_LOOP:
         ; Normal gameplay continues regardless of fill state
         jsr READ_JOYSTICK
         jsr UPDATE_PLAYER
+        jsr UPDATE_FUSE         ; trail-burning fuse if you stall mid-draw
         jsr UPDATE_QIX
         jsr UPDATE_QIX2
         jsr UPDATE_SPARX
@@ -5826,6 +5827,15 @@ NEXTLIFE_MID  = $C6E4
 NEXTLIFE_HI   = $C6E5
 DRAW_SLOW       = $C6E6  ; 1 while the current trail is an all-slow (2x) draw
 CLAIM_SCORE_STEP = $C6E7 ; score added per claimed tile: 1 (fast) or 2 (slow draw)
+; The fuse: a spark that crawls up your trail when you stall mid-draw.
+FUSE_ACTIVE     = $C6E8  ; 1 = spark currently lit on the trail
+FUSE_INDEX      = $C6E9  ; trail-buffer index the spark sits on (0 = start)
+FUSE_STALL      = $C6EA  ; consecutive frames stalled while drawing
+FUSE_TIMER      = $C6EB  ; countdown between spark advances
+FUSE_PREV_COUNT = $C6EC  ; TRAIL_COUNT last frame (did the player lay a tile?)
+
+FUSE_STALL_DELAY  = 30   ; frames stopped mid-draw before the fuse ignites
+FUSE_ADVANCE_RATE = 6    ; frames the spark spends on each trail tile
 
 OVERLAY_LEVEL2_BG:
         ; Bank out BASIC ROM so we can read data in $A000-$BFFF region
@@ -8011,6 +8021,105 @@ ADD_LEVEL_BONUS:
         dex
         bne @loop
         rts
+
+; ----------------------------------------------------------------------------
+; THE FUSE
+; ----------------------------------------------------------------------------
+; Classic Qix tension: if you stop while drawing, a spark ignites at the start
+; of your trail and crawls toward you one tile at a time. If it reaches your
+; head, you die. Laying any new trail tile snuffs it. So once you commit to a
+; draw you must keep moving - dawdling in open space is lethal. FUSE_STALL_DELAY
+; frames of no progress arm it; the spark then advances every FUSE_ADVANCE_RATE
+; frames. It's a recoloured trail cell (white spark $10 over the pink trail
+; $A0) via SET_BITMAP_COLOR; the cell reverts to $A0 as the spark moves on.
+; Called every playing frame (right after UPDATE_PLAYER); no-op when not drawing.
+; ----------------------------------------------------------------------------
+UPDATE_FUSE:
+        lda PLAYER_DRAWING
+        bne @drawing
+        ; not drawing: snuff any spark and disarm
+        jsr FUSE_SNUFF
+        lda #0
+        sta FUSE_PREV_COUNT
+        rts
+@drawing:
+        lda TRAIL_COUNT
+        cmp FUSE_PREV_COUNT
+        beq @stalled
+        ; the player laid a new tile this frame -> snuff and rearm
+        sta FUSE_PREV_COUNT
+        jmp FUSE_SNUFF
+@stalled:
+        lda TRAIL_COUNT
+        beq @ret                ; no trail tiles to burn yet
+        lda FUSE_ACTIVE
+        bne @run
+        ; not yet lit: count stalled frames until the delay elapses
+        inc FUSE_STALL
+        lda FUSE_STALL
+        cmp #FUSE_STALL_DELAY
+        bcc @ret
+        ; ignite at the trail start (index 0)
+        lda #1
+        sta FUSE_ACTIVE
+        lda #0
+        sta FUSE_INDEX
+        lda #FUSE_ADVANCE_RATE
+        sta FUSE_TIMER
+        jmp @flash              ; paint the spark at index 0
+@run:
+        dec FUSE_TIMER
+        bne @flash              ; not time to advance yet - just flash in place
+        lda #FUSE_ADVANCE_RATE
+        sta FUSE_TIMER
+        lda #$A0                ; revert the tile the spark is leaving
+        jsr FUSE_PAINT
+        inc FUSE_INDEX
+        lda FUSE_INDEX
+        cmp TRAIL_COUNT
+        bcs @caught             ; reached the player's head
+        ; fall through to repaint the spark on its new tile
+@flash:
+        ; flash white/yellow (~8-frame period) so the spark is easy to spot
+        lda FRAME_COUNT
+        and #4
+        beq @white
+        lda #$70                ; yellow
+        bne @paint              ; $70 != 0, always taken
+@white:
+        lda #$10                ; white
+@paint:
+        jmp FUSE_PAINT
+@caught:
+        lda #0
+        sta FUSE_ACTIVE         ; clear before death so respawn can't revert a
+        jmp PLAYER_DEATH        ;   stale cell (CLEAR_TRAIL erases the spark)
+@ret:
+        rts
+
+; FUSE_SNUFF: revert the spark cell (if lit) to the pink trail and disarm.
+FUSE_SNUFF:
+        lda FUSE_ACTIVE
+        beq @off
+        lda #$A0
+        jsr FUSE_PAINT
+@off:
+        lda #0
+        sta FUSE_ACTIVE
+        sta FUSE_STALL
+        rts
+
+; FUSE_PAINT: A = bitmap colour byte; recolour the trail cell at FUSE_INDEX.
+FUSE_PAINT:
+        pha
+        ldx FUSE_INDEX
+        lda TRAIL_BUFFER_Y, x
+        sta TEMP1
+        lda TRAIL_BUFFER_X, x
+        tax                     ; X = column
+        ldy TEMP1               ; Y = row
+        pla                     ; A = colour
+        jmp SET_BITMAP_COLOR    ; preserves X/Y, returns to our caller
 
 ; ============================================================================
 ; MACHINE / VIDEO-STANDARD DETECTION

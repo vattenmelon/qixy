@@ -16,6 +16,9 @@ In QIXY, you control a marker that moves around a rectangular playfield. Your go
 - **Qix**: The main enemy that bounces around inside the unclaimed area. If it touches your trail while you're drawing, you lose a life! A **second Qix** (a free-flying triangle) joins from level 6 — seal it inside claimed territory to destroy it.
 - **Sparx**: Enemies that patrol the borders — avoid them at all costs! They get faster as the levels climb (reaching full speed at level 25), and a **third Sparx** circling the opposite way joins from level 8.
 
+### The Fuse
+Don't dawdle while drawing! If you stop part-way through a line, a **spark ignites at the base of your trail and races up it toward you** — if it catches your head, you lose a life. Keep moving to outrun it; laying any new tile puts it out. Once you commit to a draw, you're committed.
+
 ### Objective
 Claim the target percentage of the playfield to advance to the next level. The target starts at **70%** and rises **+2% per level** (capped at 90%). Levels are endless — they keep getting harder, and your run ends only when you run out of lives.
 
