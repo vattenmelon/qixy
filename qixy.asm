@@ -1298,20 +1298,9 @@ DRAW_CLAIMED_TILE:
         lda CLAIM_COLORS, x
         ldy #0
         sta (COLOR_LO), y
-        ; Fill bitmap cell (for display)
-        ldx SAVE_X
-        ldy SAVE_Y
-        jsr FILL_BITMAP_CELL
-        ; Set bitmap color (foreground in high nibble, black background)
-        ldx FILL_COLOR_IDX
-        lda CLAIM_COLORS, x
-        asl
-        asl
-        asl
-        asl                     ; Shift color to high nibble
-        ldx SAVE_X
-        ldy SAVE_Y
-        jsr SET_BITMAP_COLOR
+        ; Paint the bitmap cell: solid for a fast claim, a diagonal two-tone
+        ; weave for a slow draw (texture picked from CLAIM_SCORE_STEP).
+        jsr PAINT_CLAIM_BITMAP
         rts
 
 ; Calculate screen address from X (column), Y (row)
@@ -2239,21 +2228,9 @@ UPDATE_CLAIM_UNMARKED:
         ldy #0
         sta (COLOR_LO), y
 
-        ; Fill bitmap cell (for display)
-        ldx SAVE_X
-        ldy SAVE_Y
-        jsr FILL_BITMAP_CELL
-
-        ; Set bitmap color (foreground in high nibble, black background)
-        ldx FILL_COLOR_IDX
-        lda CLAIM_COLORS, x
-        asl
-        asl
-        asl
-        asl                     ; Shift color to high nibble
-        ldx SAVE_X
-        ldy SAVE_Y
-        jsr SET_BITMAP_COLOR
+        ; Paint the bitmap cell: solid for a fast claim, a diagonal two-tone
+        ; weave for a slow draw (texture picked from CLAIM_SCORE_STEP).
+        jsr PAINT_CLAIM_BITMAP
 
         ; Add to score: +1 per claimed tile, or +2 for a slow draw
         ; (CLAIM_SCORE_STEP was latched at COMPLETE_CLAIM).
@@ -7697,6 +7674,102 @@ QIX2_EXPLODE_SPRITE:
 ; below $2000. Costs no real .prg bytes (zero-fill the disk cruncher squeezes).
 ; ============================================================================
 * = $3B00
+
+; ============================================================================
+; SLOW-DRAW TWO-TONE WEAVE
+; ============================================================================
+; (Placed in the $3B00 block; the $2C00 bitmap-routine segment is full.)
+;
+; A slow draw (fire held the whole way) scores 2x and is rendered specially:
+; instead of a solid block, each claimed cell gets a diagonal two-tone weave
+; so the player can see at a glance which territory they earned the bonus on.
+
+; Background (low-nibble) partner for each CLAIM_COLORS entry: a darker shade of
+; the same hue shows through the pattern's "0" pixels. Same index as CLAIM_COLORS.
+CLAIM_COLORS_BG:
+        !byte COL_BLUE, COL_RED, COL_GREEN, COL_ORANGE
+        !byte COL_BLUE, COL_BLUE, COL_BROWN, COL_DGREY
+
+; Diagonal-stripe weave (hires, MSB = leftmost pixel). A rotate-left-by-one each
+; row gives continuous 2px stripes that tile seamlessly across cell edges
+; (period 4 divides 8). "1" bits take the bright CLAIM_COLORS hue, "0" bits the
+; darker CLAIM_COLORS_BG partner.
+SLOW_PATTERN:
+        !byte $33, $66, $CC, $99, $33, $66, $CC, $99
+
+; Like FILL_BITMAP_CELL, but writes the SLOW_PATTERN diagonal weave instead of
+; a solid $FF block. Input: X = column (0-39), Y = row (0-24). Preserves X, Y.
+FILL_BITMAP_CELL_PATTERN:
+        stx TEMP3
+        sty TEMP4
+        ; Get row base address
+        lda BITMAP_ROW_LO, y
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, y
+        sta SCREEN_HI
+        ; Add column * 8 (handle overflow for columns >= 32)
+        txa
+        asl
+        asl
+        asl
+        bcc +
+        inc SCREEN_HI
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ; Write the 8 pattern bytes
+        ldy #0
+-       lda SLOW_PATTERN, y
+        sta (SCREEN_LO), y
+        iny
+        cpy #8
+        bne -
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; Paint the bitmap for a freshly claimed cell. Reads X=column, Y=row from
+; SAVE_X/SAVE_Y (both claim paths set them). The texture is chosen by
+; CLAIM_SCORE_STEP, latched at COMPLETE_CLAIM:
+;   fast claim (1) -> solid block, foreground hue over black
+;   slow draw  (2) -> diagonal two-tone weave: bright CLAIM_COLORS hue stripes
+;                     over the darker CLAIM_COLORS_BG partner
+; Tail-calls SET_BITMAP_COLOR, so it returns to the caller.
+PAINT_CLAIM_BITMAP:
+        lda CLAIM_SCORE_STEP
+        cmp #2
+        beq @slow
+
+        ; --- fast claim: solid block, black background ---
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr FILL_BITMAP_CELL
+        ldx FILL_COLOR_IDX
+        lda CLAIM_COLORS, x
+        asl
+        asl
+        asl
+        asl                     ; foreground -> high nibble, black low nibble
+        jmp @setcol
+
+@slow:  ; --- slow draw: diagonal two-tone weave ---
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr FILL_BITMAP_CELL_PATTERN
+        ldx FILL_COLOR_IDX
+        lda CLAIM_COLORS, x
+        asl
+        asl
+        asl
+        asl                     ; foreground -> high nibble
+        ora CLAIM_COLORS_BG, x  ; darker partner -> low nibble (X = FILL_COLOR_IDX)
+
+@setcol:
+        ldx SAVE_X
+        ldy SAVE_Y
+        jmp SET_BITMAP_COLOR    ; tail call
 
 ; --- APPLY_TURN_SLACK: pick the effective move direction for this tick --------
 ; Only active while walking (not drawing) and while a direction is held. May
