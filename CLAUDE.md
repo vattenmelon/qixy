@@ -99,12 +99,12 @@ Game state controlled by GAME_STATE variable (`$1C`):
 - 6 = high score display
 
 ### Core Systems
-- **Player movement**: Joystick port 2 input, sprite-based with trail drawing
+- **Player movement**: Joystick port 2 input, sprite-based with trail drawing. **Slow-draw vs fast-draw** (risk/reward): fire is required to *start* a draw; keeping fire held while drawing = a SLOW draw (half move speed via `DRAW_MOVE_THRESHOLD`, threshold 6 vs 3) whose enclosed area scores **2×**; releasing fire mid-draw = a FAST draw at normal speed and 1× score. The bonus only applies if the whole trail stayed slow (`DRAW_SLOW` flag, cleared on any fire-released step), latched at claim time into `CLAIM_SCORE_STEP` (1 or 2) which `ADD_CLAIM_SCORE` adds per claimed tile.
 - **Enemy AI**: Qix (bouncing enemy) and Sparx (border patrol). The Sparx speed is level-scaled by `SET_SPARX_SPEED` using a fixed-point accumulator (`SPARX_RATE`/`SPARX_ACC`, like the Qix): the per-frame rate ramps smoothly from 64 (a move every 4 frames = original speed) at level 1 to 85 (every ~3 frames = the player's own pace) at level 25 via `SPARX_RATE_TBL`, then holds. So Sparx reach full speed only at level 25 and never outrun the player. A second Qix joins at L6+, a third (reverse) Sparx at L8+.
 - **Territory claiming**: Flood-fill algorithm runs incrementally to avoid frame drops
 - **Collision detection**: Monitors trail intersections and sprite overlaps
 - **Audio**: SID chip sound effects with music state machine (normal and sad/game-over modes)
-- **Scoring**: Multi-byte score tracking (1 pt/claimed tile) with percentage-based level progression. Clear target starts at 75% and rises +2%/level to a 90% cap (`TARGET_PERCENT`). Levels are **endless** — `LEVEL` keeps climbing past 10 (no wrap). Both enemy speeds ramp over levels 1→25 and hold there: Qix via `QIX_SPEED_TBL` (rate 11→64 = 0.17→1.0 tile/frame, `SET_QIX_SPEED`), Sparx via `SPARX_RATE_TBL`.
+- **Scoring**: Multi-byte score tracking (1 pt/claimed tile, or 2 for a slow draw — see Player movement) with percentage-based level progression. Clear target starts at 75% and rises +2%/level to a 90% cap (`TARGET_PERCENT`). Levels are **endless** — `LEVEL` keeps climbing past 10 (no wrap). Both enemy speeds ramp over levels 1→25 and hold there: Qix via `QIX_SPEED_TBL` (rate 11→64 = 0.17→1.0 tile/frame, `SET_QIX_SPEED`), Sparx via `SPARX_RATE_TBL`.
 - **Lives**: start with 3. Extra lives are awarded both for a single claim covering ≥50% of the field *and* every 5000 points (`CHECK_SCORE_LIFE`, threshold in `NEXTLIFE_LO/MID/HI`). Post-start/respawn invincibility is `GRACE_TIMER` = 60 frames (~1s).
 - **High scores**: Persistent high score table with name entry (5 entries stored at `$C600`)
 - **Machine detection** (`DETECT_MACHINE`, runs once at startup): identifies the host and stores the result in `MACHINE_TYPE`/`VIDEO_STD`, shown as a line under the high-score credits (e.g. `C128 - PAL`):

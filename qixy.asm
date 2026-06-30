@@ -1530,10 +1530,13 @@ READ_JOYSTICK:
 ; ============================================================================
 
 UPDATE_PLAYER:
-        ; Speed control - move every N frames
+        ; Speed control - move every N frames. A slow draw (drawing while still
+        ; holding fire) uses a higher threshold = half speed; DRAW_MOVE_THRESHOLD
+        ; sets TEMP1 to 3 (normal/fast) or 6 (slow draw).
         inc PLAYER_SPEED
+        jsr DRAW_MOVE_THRESHOLD
         lda PLAYER_SPEED
-        cmp #3
+        cmp TEMP1
         bcs @speed_ok
         jmp @no_move
 @speed_ok:
@@ -1642,6 +1645,7 @@ UPDATE_PLAYER:
         ; Start drawing!
         lda #1
         sta PLAYER_DRAWING
+        sta DRAW_SLOW           ; assume an all-slow (2x) draw until fire released
         lda PLAYER_X
         sta TRAIL_START_X
         lda PLAYER_Y
@@ -1736,6 +1740,13 @@ UPDATE_PLAYER:
         lda PLAYER_Y
         sta TRAIL_BUFFER_Y, x
         inc TRAIL_COUNT
+
+        ; Slow-draw tracking: if fire isn't held on a drawing step the player
+        ; took the fast/cheap route - drop the 2x bonus for this trail.
+        lda FIRE_HELD
+        bne +
+        sta DRAW_SLOW           ; A = 0 here
++
 
         ; Save target position before drawing (CALC_SCREEN_ADDR corrupts TEMP1)
         lda TEMP1
@@ -1836,6 +1847,10 @@ UPDATE_PLAYER:
 ; ============================================================================
 
 COMPLETE_CLAIM:
+        ; Latch the slow-draw 2x bonus for this claim now - DRAW_SLOW would be
+        ; reset if the player starts a new draw while this fill is still running.
+        jsr SET_CLAIM_STEP
+
         ; Save current percentage before claim (for extra life check)
         lda PERCENT_CLAIMED
         sta PREV_PERCENT
@@ -2237,20 +2252,9 @@ UPDATE_CLAIM_UNMARKED:
         ldy SAVE_Y
         jsr SET_BITMAP_COLOR
 
-        ; Add to score (BCD-style: each byte 0-99)
-        inc SCORE_LO
-        lda SCORE_LO
-        cmp #100
-        bcc @skip
-        lda #0
-        sta SCORE_LO
-        inc SCORE_MID
-        lda SCORE_MID
-        cmp #100
-        bcc @skip
-        lda #0
-        sta SCORE_MID
-        inc SCORE_HI
+        ; Add to score: +1 per claimed tile, or +2 for a slow draw
+        ; (CLAIM_SCORE_STEP was latched at COMPLETE_CLAIM).
+        jsr ADD_CLAIM_SCORE
 
 @skip:
         ; Advance to next tile
@@ -5818,6 +5822,8 @@ SPARX3_TOGGLE = $C6E2   ; alternates each Sparx tick for Sparx 3 half-speed
 NEXTLIFE_LO   = $C6E3   ; score threshold for next extra life (base-100 digits)
 NEXTLIFE_MID  = $C6E4
 NEXTLIFE_HI   = $C6E5
+DRAW_SLOW       = $C6E6  ; 1 while the current trail is an all-slow (2x) draw
+CLAIM_SCORE_STEP = $C6E7 ; score added per claimed tile: 1 (fast) or 2 (slow draw)
 
 OVERLAY_LEVEL2_BG:
         ; Bank out BASIC ROM so we can read data in $A000-$BFFF region
@@ -7923,6 +7929,59 @@ CHECK_SCORE_LIFE:
 @store:
         sta NEXTLIFE_MID
 @no:
+        rts
+
+; ----------------------------------------------------------------------------
+; SLOW-DRAW / FAST-DRAW (risk vs reward)
+; ----------------------------------------------------------------------------
+; Drawing always needs fire to START. Keeping fire held while drawing is a SLOW
+; draw - half move speed, but the enclosed area scores DOUBLE. Releasing fire
+; mid-draw switches to a FAST draw - normal speed, normal score. So you choose
+; each claim: squeeze the trigger for the careful, valuable, riskier claim, or
+; let go to dash to safety for less. (These live in the $3B00 block, not the
+; near-full $2460 / $0810 blocks.)
+; ----------------------------------------------------------------------------
+; DRAW_MOVE_THRESHOLD: TEMP1 := frames-per-move this frame - 6 (half speed)
+; while slow-drawing (PLAYER_DRAWING and FIRE_HELD both set), else 3.
+DRAW_MOVE_THRESHOLD:
+        lda PLAYER_DRAWING
+        beq @fast
+        lda FIRE_HELD
+        beq @fast
+        lda #6
+        bne @set                ; 6 != 0, always taken
+@fast:  lda #3
+@set:   sta TEMP1
+        rts
+
+; SET_CLAIM_STEP: latch the per-tile score step for the claim about to fill -
+; 2 if the whole trail stayed slow (DRAW_SLOW still set), else 1.
+SET_CLAIM_STEP:
+        ldx #1
+        lda DRAW_SLOW
+        beq @set
+        ldx #2
+@set:   stx CLAIM_SCORE_STEP
+        rts
+
+; ADD_CLAIM_SCORE: add CLAIM_SCORE_STEP (1 or 2) to the base-100 score with
+; carry. Called once per newly-claimed tile during the fill. STEP is at most 2,
+; so LO carries into MID by at most 1 (single inc/normalise).
+ADD_CLAIM_SCORE:
+        lda SCORE_LO
+        clc
+        adc CLAIM_SCORE_STEP
+        cmp #100
+        bcc @store
+        sbc #100                ; carry set from cmp -> A -= 100
+        inc SCORE_MID
+        ldx SCORE_MID
+        cpx #100
+        bcc @store
+        ldx #0
+        stx SCORE_MID
+        inc SCORE_HI
+@store: sta SCORE_LO
         rts
 
 ; ============================================================================
