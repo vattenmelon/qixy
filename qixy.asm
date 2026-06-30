@@ -423,6 +423,9 @@ MAIN_LOOP:
         ; Cheat: C key instantly completes the current level
         jsr CHECK_CHEAT_KEY
 
+        ; Award a score-based extra life every 5000 points
+        jsr CHECK_SCORE_LIFE
+
         ; Process fill incrementally if active (small work per frame)
         lda FILL_STATE
         beq @no_fill
@@ -1018,13 +1021,18 @@ START_NEW_GAME:
         sta SCORE_LO
         sta SCORE_MID
         sta SCORE_HI
+        sta NEXTLIFE_LO         ; first score-based extra life at 5000 points
+        sta NEXTLIFE_HI
+        lda #50                 ; 5000 = 50 in the hundreds digit (base-100 score)
+        sta NEXTLIFE_MID
+        lda #0
         sta PERCENT_CLAIMED
         sta TRAIL_COUNT
         sta PLAYER_DRAWING
         sta PREV_FIRE
         sta FILL_STATE
         sta FILL_COLOR_IDX
-        lda #120            ; 2 second grace period at start (~60fps)
+        lda #60             ; 1 second grace period at start (~60fps)
         sta GRACE_TIMER
 
         lda #$FF
@@ -2600,9 +2608,18 @@ QIX_COLORS: !byte COL_RED, COL_PINK, COL_PURPLE, COL_ORANGE
 ; ============================================================================
 
 UPDATE_SPARX:
-        lda FRAME_COUNT
-        and #$03
-        bne @done
+        ; Level-scaled cadence via a fixed-point accumulator (like the Qix):
+        ; add SPARX_RATE (1/256 moves/frame) each frame; a carry out = one move.
+        ; rate 64 -> a move every 4 frames (slow), rate 85 -> every ~3 (max, =
+        ; player pace). SET_SPARX_SPEED ramps the rate from L1 to L25.
+        lda SPARX_ACC
+        clc
+        adc SPARX_RATE
+        sta SPARX_ACC
+        bcs @move
+        rts
+@move:
+        ; (the accumulator keeps its fractional remainder across moves)
 
         ; Sparx 1 and 2 follow the border the normal (CW) way
         lda #0
@@ -3135,7 +3152,7 @@ UPDATE_DYING:
         ; Restart the music
         jsr INIT_MUSIC
 
-        lda #120            ; 2 second grace period after respawn
+        lda #60             ; 1 second grace period after respawn
         sta GRACE_TIMER
 
         jsr UPDATE_HUD
@@ -3337,15 +3354,15 @@ UPDATE_LEVEL_DONE:
         dec DEATH_TIMER
         bne @anim
 
-        ; Next level
-        inc LEVEL
+        ; Next level - endless: keep climbing (difficulty keeps ramping past
+        ; level 10 via SET_QIX_SPEED clamp + SET_SPARX_SPEED). Guard the byte so
+        ; an (unreachable) level 255 can't wrap to 0 and index junk.
         lda LEVEL
-        cmp #11             ; allow up to level 10, then wrap to 1
-        bcc @ok
-        lda #1
-        sta LEVEL
+        cmp #$FF
+        beq @ok
+        inc LEVEL
 @ok:
-        ; Speed up Qix - smooth ramp from level 1 to the level-10 maximum
+        ; Speed up Qix - smooth ramp; clamps at the level-10 maximum past L10
         jsr SET_QIX_SPEED
 
         ; Harder target
@@ -4670,24 +4687,11 @@ INIT_MUSIC:
 ; does not matter. Keep the running total below SPRITE_RAM ($2800).
 * = $2460
 
-; ----------------------------------------------------------------------------
-; SET_QIX_SPEED: seed QIX_SPEED (per-frame move increment, 1/64-tile units) from
-; the current LEVEL. The curve is linear in tiles/frame: level 1 keeps the old
-; start speed (~1/6 tile/frame) and level 10 reaches 1 tile/frame - matching the
-; old integer-divisor maximum, but now ramped smoothly across all ten levels
-; instead of jumping there by level 5. LEVEL is always 1..10 (wraps at 11).
-; ----------------------------------------------------------------------------
-SET_QIX_SPEED:
-        ldx LEVEL
-        dex                     ; level 1 -> table index 0
-        lda QIX_SPEED_TBL, x
-        sta QIX_SPEED
-        rts
-
-; tiles/frame * 64, linear from 11/64 (~0.17, = old level-1 speed) at level 1 up
-; to 64/64 (= 1.0, = old maximum) at level 10. ~+6 per level.
-QIX_SPEED_TBL:
-        !byte 11, 17, 23, 29, 35, 41, 47, 53, 59, 64
+; NOTE: SET_QIX_SPEED, SET_SPARX_SPEED, QIX_SPEED_TBL and CHECK_SCORE_LIFE used
+; to live here, but this relocated block is capped just under SPRITE_RAM ($2800)
+; - INIT_SPRITES fills $2800-$2BFF at runtime and clobbers anything past it.
+; Adding these routines here overflowed that cap, so they were moved to the
+; $3B00 block (which has room). They are reached only by label, so it's moot.
 
 UPDATE_MUSIC:
         lda MUSIC_ENABLED
@@ -5284,6 +5288,10 @@ SFX_QIX2_EXPLODE:
 ; Skip over CHARSET_RAM ($2000-$27FF) and SPRITE_RAM ($2800-$2BFF)
 ; to avoid overlapping with reserved VIC memory areas
 CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
+; Guard: this relocated block MUST end below SPRITE_RAM ($2800) - INIT_SPRITES
+; fills $2800-$2BFF at runtime and would clobber any code that spilled past it
+; (which silently corrupts e.g. CHECK_QIX2_TRAPPED and crashes on every claim).
+!if CODE_END_MARKER > $2800 { !error "relocated block overflowed into SPRITE_RAM ($2800): ", CODE_END_MARKER }
 * = $2C00
 
 NOTE_FREQ_LO:
@@ -5684,9 +5692,13 @@ INIT_SPARX3:
 UPDATE_SPARX3:
         lda SPARX3_ACTIVE
         beq @done
-        lda FRAME_COUNT
-        and #$04
-        bne @done                   ; half speed: only every other tick
+        ; Half speed: move on every other Sparx tick. (The caller now gates on a
+        ; level-scaled period, not FRAME_COUNT, so use a toggle instead.)
+        lda SPARX3_TOGGLE
+        eor #1
+        and #1                      ; keep it strictly 0/1 (RAM may start dirty)
+        sta SPARX3_TOGGLE
+        beq @done                   ; skip on the "off" tick
         lda #1
         sta SPARX_HAND              ; mirrored wall-follow -> opposite circulation
         ldx SPARX3_X
@@ -5794,6 +5806,18 @@ BG_COL = $C301
 RLE_RUN = $C302         ; level-10 RLE: bytes left in current run
 RLE_LIT = $C303         ; level-10 RLE: bytes left in current literal block
 RLE_VAL = $C304         ; level-10 RLE: current run value
+
+; Gameplay difficulty/economy state. MUST live in RAM that the fill engine
+; never touches: FIELD_STATE ($C180-$C567) and the flood stacks ($C100-$C2FF)
+; are overwritten on every claim, so $C3xx (where these used to be) is NOT safe.
+; This sits in the zero-filled gap above HUD_COLOR ($C690+80 = $C6E0) and below
+; the $C700 data block - clear of the fill buffers, HUD, and high-score table.
+SPARX_RATE    = $C6E0   ; per-frame accumulator increment (level-scaled speed)
+SPARX_ACC     = $C6E1   ; fixed-point move accumulator (1/256 moves per frame)
+SPARX3_TOGGLE = $C6E2   ; alternates each Sparx tick for Sparx 3 half-speed
+NEXTLIFE_LO   = $C6E3   ; score threshold for next extra life (base-100 digits)
+NEXTLIFE_MID  = $C6E4
+NEXTLIFE_HI   = $C6E5
 
 OVERLAY_LEVEL2_BG:
         ; Bank out BASIC ROM so we can read data in $A000-$BFFF region
@@ -6752,14 +6776,19 @@ UPDATE_HUD_BUF:
         inx
         bne @li
 @li_done:
-        ; Lives digit at col 7
+        ; Lives count at col 7 (2 digits; leading zero blanked under 10 lives,
+        ; so score-based extra lives can push the count past 9 without glitching)
         lda LIVES
-        clc
-        adc #$30
-        sta HUD_BUF + 47
+        jsr BYTE_TO_DEC             ; X = tens char, Y = ones char
+        cpx #$30
+        bne +
+        ldx #$20                    ; blank a leading zero
++       stx HUD_BUF + 47
+        sty HUD_BUF + 48
         ; Color lives green ($50)
         lda #$50
         sta HUD_COLOR + 47
+        sta HUD_COLOR + 48
 
         ; "FILL: " at col 22 (offset +40 = 62)
         ldx #0
@@ -7802,6 +7831,98 @@ UPDATE_FANFARE:
         sta SID_FREQ_HI1
         lda #$21                ; sawtooth, gate on
         sta SID_CTRL1
+        rts
+
+; ============================================================================
+; LEVEL DIFFICULTY + SCORE-EXTRA-LIFE HELPERS
+; ----------------------------------------------------------------------------
+; These live in the $3B00 block (not the $2460 relocated block) because that
+; block is capped just under SPRITE_RAM ($2800): INIT_SPRITES fills $2800-$2BFF
+; at runtime and clobbers any code placed past the cap. Reached only by label.
+; ----------------------------------------------------------------------------
+; SET_QIX_SPEED: seed QIX_SPEED (per-frame move increment, 1/64-tile units) from
+; the current LEVEL. Linear in tiles/frame: level 1 keeps the old start speed
+; (~1/6 tile/frame), level 25 reaches 1 tile/frame. Levels are endless; past
+; level 25 the index is clamped so Qix holds its top speed (matches Sparx).
+SET_QIX_SPEED:
+        ldx LEVEL
+        cpx #26                 ; clamp at level 25 (table has 25 entries)
+        bcc +
+        ldx #25
++
+        dex                     ; level 1 -> table index 0
+        lda QIX_SPEED_TBL, x
+        sta QIX_SPEED
+        ; fall through to seed the Sparx cadence for this level too
+; ----------------------------------------------------------------------------
+; SET_SPARX_SPEED: seed SPARX_RATE (the per-frame accumulator increment used by
+; UPDATE_SPARX) from LEVEL. The rate ramps smoothly from 64 (a move every 4
+; frames = the original speed) at level 1 up to 85 (every ~3 frames = the
+; player's own pace) at level 25, and holds there. So Sparx only reach full
+; speed at level 25 and never outrun the player. Called on the fall-through.
+SET_SPARX_SPEED:
+        ldx LEVEL
+        cpx #26                 ; clamp at level 25 (table has 25 entries)
+        bcc +
+        ldx #25
++
+        dex                     ; level 1 -> table index 0
+        lda SPARX_RATE_TBL, x
+        sta SPARX_RATE
+        lda #0
+        sta SPARX_ACC           ; restart the accumulator for the new level
+        rts
+
+; Per-frame move accumulator increment, level 1..25. 64 = move every 4 frames
+; (256/64, original slow speed); 85 = every ~3 frames (256/85, == player pace).
+; Linear 64->85 across 25 levels, so the climb to full speed takes the long way.
+SPARX_RATE_TBL:
+        !byte 64, 65, 66, 67, 68, 68, 69, 70, 71, 72
+        !byte 73, 74, 75, 75, 76, 77, 78, 79, 80, 81
+        !byte 82, 82, 83, 84, 85
+
+; QIX_SPEED in 1/64-tile/frame units, level 1..25. Linear from 11/64 (~0.17,
+; = old level-1 speed) at level 1 up to 64/64 (= 1.0 tile/frame, the maximum)
+; at level 25, so the Qix takes the long way to top speed (matches Sparx ramp).
+QIX_SPEED_TBL:
+        !byte 11, 13, 15, 18, 20, 22, 24, 26, 29, 31
+        !byte 33, 35, 38, 40, 42, 44, 46, 49, 51, 53
+        !byte 55, 57, 60, 62, 64
+
+; ----------------------------------------------------------------------------
+; CHECK_SCORE_LIFE: grant an extra life each time the score crosses the next
+; 5000-point boundary. The score is little-endian base-100 (each byte 0..99,
+; value = HI*10000 + MID*100 + LO), so an ordered compare is a digit-by-digit
+; compare from HI down. Called once per frame; the score never jumps 5000 in a
+; frame, so at most one award per call. Complements the rare ">=50% in one
+; claim" bonus by rewarding steady play too.
+; ----------------------------------------------------------------------------
+CHECK_SCORE_LIFE:
+        lda SCORE_HI
+        cmp NEXTLIFE_HI
+        bcc @no
+        bne @award
+        lda SCORE_MID
+        cmp NEXTLIFE_MID
+        bcc @no
+        bne @award
+        lda SCORE_LO
+        cmp NEXTLIFE_LO
+        bcc @no
+@award:
+        inc LIVES
+        jsr SFX_EXTRA_LIFE
+        ; Advance the threshold by 5000 (add 50 to the hundreds digit).
+        lda NEXTLIFE_MID
+        clc
+        adc #50
+        cmp #100
+        bcc @store
+        sbc #100                ; carry still set -> subtract 100, carry the 10000
+        inc NEXTLIFE_HI
+@store:
+        sta NEXTLIFE_MID
+@no:
         rts
 
 ; ============================================================================
