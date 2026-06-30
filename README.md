@@ -8,14 +8,27 @@ In QIXY, you control a marker that moves around a rectangular playfield. Your go
 
 ### Controls
 - **Joystick (Port 2)**: Move in any direction
-- **Fire Button**: Hold to draw lines in unclaimed territory
+- **Fire Button**: Press fire while stepping off an edge to start drawing into open territory. What you do with fire *while* drawing sets the draw mode (see Scoring):
+  - **Hold fire** → **slow draw**: half speed, but the area you enclose is worth **double** points.
+  - **Release fire** → **fast draw**: normal speed, normal points — use it to dash back to safety.
 
 ### Enemies
-- **Qix**: The main enemy that bounces around inside the unclaimed area. If it touches your trail while you're drawing, you lose a life!
-- **Sparx**: Two enemies that patrol the borders. Avoid them at all costs!
+- **Qix**: The main enemy that bounces around inside the unclaimed area. If it touches your trail while you're drawing, you lose a life! A **second Qix** (a free-flying triangle) joins from level 6 — seal it inside claimed territory to destroy it.
+- **Sparx**: Enemies that patrol the borders — avoid them at all costs! They get faster as the levels climb (reaching full speed at level 25), and a **third Sparx** circling the opposite way joins from level 8.
 
 ### Objective
-Claim at least 75% of the playfield to advance to the next level. The more you claim, the higher your score!
+Claim the target percentage of the playfield to advance to the next level. The target starts at **70%** and rises **+2% per level** (capped at 90%). Levels are endless — they keep getting harder, and your run ends only when you run out of lives.
+
+### Scoring
+Your score comes from three places:
+
+- **Claiming territory** — every tile you enclose scores points as it fills:
+  - **1 point per tile** on a fast draw (fire released).
+  - **2 points per tile** on a slow draw (fire held for the *entire* trail). Releasing fire even once during that trail drops it back to 1×.
+- **Level-completion bonus** — clearing a level awards **`(level + overshoot) × 100` points**, where *overshoot* is how many percent past the target you finished. So both reaching higher levels *and* saving a big region for one large finishing claim pay off (e.g. clearing level 5 at 85% with a 75% target = `(5 + 10) × 100` = **1500**).
+- **Extra lives** (not points, but score-driven) — you earn a spare life **every 5,000 points**, and an immediate bonus life for any **single claim that covers ≥ 50%** of the field.
+
+The score is shown as six digits in the HUD (maximum 999,999) and the top five runs are kept on a persistent high-score table.
 
 ## Building
 
