@@ -1986,7 +1986,9 @@ FINISH_FILL:
         cmp TARGET_PERCENT
         bcc @not_done
 
-        ; Level complete!
+        ; Level complete! Award a completion bonus (scales with level and how
+        ; far past the target you finished) before switching state.
+        jsr ADD_LEVEL_BONUS
         lda #3
         sta GAME_STATE
         lda #120
@@ -7982,6 +7984,32 @@ ADD_CLAIM_SCORE:
         stx SCORE_MID
         inc SCORE_HI
 @store: sta SCORE_LO
+        rts
+
+; ----------------------------------------------------------------------------
+; ADD_LEVEL_BONUS: award a level-completion bonus = (LEVEL + overshoot) * 100
+; points, where overshoot = PERCENT_CLAIMED - TARGET_PERCENT (how far past the
+; clear target you finished, >= 0 here). Rewards both reaching higher levels and
+; saving a big final claim. Called once per real level clear (the cheat-skip
+; path bypasses the fill, so it gets no bonus). Read before LEVEL/TARGET change.
+ADD_LEVEL_BONUS:
+        lda PERCENT_CLAIMED
+        sec
+        sbc TARGET_PERCENT      ; A = overshoot %
+        clc
+        adc LEVEL               ; A = LEVEL + overshoot = bonus in hundreds (>=1)
+        tax
+@loop:
+        inc SCORE_MID           ; add 100 points (one "hundred")
+        lda SCORE_MID
+        cmp #100
+        bcc @next
+        lda #0
+        sta SCORE_MID
+        inc SCORE_HI
+@next:
+        dex
+        bne @loop
         rts
 
 ; ============================================================================
