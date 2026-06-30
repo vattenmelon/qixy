@@ -1042,7 +1042,7 @@ START_NEW_GAME:
         sta LIVES
         lda #1
         sta LEVEL
-        lda #75
+        lda #70                 ; level 1 clear target (rises +2%/level, cap 90)
         sta TARGET_PERCENT
         jsr SET_QIX_SPEED       ; seed Qix speed from LEVEL (set to 1 above)
 
