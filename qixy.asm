@@ -439,6 +439,7 @@ MAIN_LOOP:
         jsr READ_JOYSTICK
         jsr UPDATE_PLAYER
         jsr UPDATE_FUSE         ; trail-burning fuse if you stall mid-draw
+        jsr UPDATE_TRAIL_SPARK  ; bright spark at the drawing head
         jsr UPDATE_QIX
         jsr UPDATE_QIX2
         jsr UPDATE_SPARX
@@ -831,22 +832,16 @@ INIT_SPRITES:
         lda #%00111100
         sta SPRITE_RAM + 64 + 21
 
-        ; Sprite 2-3: Sparx (small square)
-        lda #%01111110
-        sta SPRITE_RAM + 128 + 0
-        sta SPRITE_RAM + 128 + 3
-        sta SPRITE_RAM + 128 + 6
-        sta SPRITE_RAM + 128 + 9
-        sta SPRITE_RAM + 128 + 12
-        sta SPRITE_RAM + 128 + 15
-
-        lda #%01111110
-        sta SPRITE_RAM + 192 + 0
-        sta SPRITE_RAM + 192 + 3
-        sta SPRITE_RAM + 192 + 6
-        sta SPRITE_RAM + 192 + 9
-        sta SPRITE_RAM + 192 + 12
-        sta SPRITE_RAM + 192 + 15
+        ; Sprite 2-3: Sparx - a small 4-point energy spark (a "+") instead of a
+        ; plain square. Combined with the per-frame colour flicker in
+        ; UPDATE_SPRITES this reads as crackling energy patrolling the border.
+        ldx #0
+@spark: lda SPARK_SHAPE, x
+        sta SPRITE_RAM + 128, x     ; sparx 1 (sprite 2)
+        sta SPRITE_RAM + 192, x     ; sparx 2 (sprite 3)
+        inx
+        cpx #18
+        bne @spark
 
         ; Set sprite pointers
         lda #(SPRITE_RAM / 64)
@@ -1898,6 +1893,8 @@ UPDATE_FILL:
         beq @do_restore
         cmp #5
         beq @do_calc
+        cmp #6
+        beq @do_settle
         ; Unknown state, reset
         lda #0
         sta FILL_STATE
@@ -1917,6 +1914,9 @@ UPDATE_FILL:
         rts
 @do_calc:
         jsr UPDATE_CALC_PERCENTAGE
+        rts
+@do_settle:
+        jsr UPDATE_SETTLE_FLASH
         rts
 
 ; Incremental trail conversion - convert trail tiles to claimed
@@ -2240,15 +2240,15 @@ UPDATE_CLAIM_UNMARKED:
         lda #CHAR_CLAIMED
         sta (SCREEN_LO), y
 
-        ; Color it based on fill index (different color per area)
-        ldx FILL_COLOR_IDX
-        lda CLAIM_COLORS, x
+        ; Capture flash: paint the cell solid WHITE now and flag it by writing
+        ; white into the char-colour RAM ($D800 - unused for display in bitmap
+        ; mode). The settle phase repaints every white-flagged cell with the real
+        ; texture a moment later, so the claimed region flashes white then fills
+        ; in. (No CLAIM_COLORS entry is white, so the flag can't collide.)
+        lda #COL_WHITE
         ldy #0
         sta (COLOR_LO), y
-
-        ; Paint the bitmap cell: solid for a fast claim, a diagonal two-tone
-        ; weave for a slow draw (texture picked from CLAIM_SCORE_STEP).
-        jsr PAINT_CLAIM_BITMAP
+        jsr PAINT_FLASH_BITMAP
 
         ; Add to score: +1 per claimed tile, or +2 for a slow draw
         ; (CLAIM_SCORE_STEP was latched at COMPLETE_CLAIM).
@@ -2269,12 +2269,12 @@ UPDATE_CLAIM_UNMARKED:
         cmp #FIELD_BOTTOM
         bcc @continue
 
-        ; Claim phase done, move to restore phase
+        ; Claim phase done -> settle phase (repaint the white-flashed cells)
         lda #FIELD_TOP + 1
         sta FILL_ROW
         lda #FIELD_LEFT + 1
         sta FILL_COL
-        lda #4
+        lda #6
         sta FILL_STATE
         rts
 
@@ -3231,6 +3231,22 @@ UPDATE_SPRITES:
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y0
 
+        ; Point the player sprite at the arrow for its travel direction so it
+        ; reads as a cutter (1=up 2=down 3=left 4=right); fall back to the
+        ; diamond if the direction is unset/invalid.
+        ldx PLAYER_DIR
+        beq @p_diamond
+        cpx #5
+        bcs @p_diamond
+        txa
+        clc
+        adc #(PLAYER_ARROW_SLOT - 1)    ; 148 + (dir - 1)
+        bne @p_setptr                   ; always non-zero
+@p_diamond:
+        lda #PLAYER_DIAMOND_SLOT
+@p_setptr:
+        sta GAMEPLAY_SCREEN + $3F8
+
         ; Qix sprite (sprite 1)
         lda QIX_X
         jsr CALC_SPRITE_X
@@ -3291,6 +3307,20 @@ UPDATE_SPRITES:
         clc
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y3
+
+        ; Sparx colour flicker: cycle SPARK_COLORS so the sparks crackle.
+        ; Sparx 1 and Sparx 2 run 2 steps out of phase for variety.
+        lda FRAME_COUNT
+        lsr
+        and #$03
+        tax
+        lda SPARK_COLORS, x
+        sta VIC_SPRITE_COL + 2          ; sparx 1
+        txa
+        eor #$02                        ; +2 phase
+        tax
+        lda SPARK_COLORS, x
+        sta VIC_SPRITE_COL + 3          ; sparx 2
 
         ; Sparx 3 sprite (sprite 5) - level 8+. Body in block 3 (DRAW_SPARX3_SPRITE).
         jsr DRAW_SPARX3_SPRITE
@@ -3395,8 +3425,14 @@ UPDATE_LEVEL_DONE:
         rts
 
 @anim:
-        ; Keep border black
-        lda #COL_BLACK
+        ; Celebratory border pulse over the level-clear animation: cycle the
+        ; neon BORDER_COLORS instead of sitting on black.
+        lda FRAME_COUNT
+        lsr
+        lsr
+        and #$07
+        tax
+        lda BORDER_COLORS, x
         sta VIC_BORDER
         jsr UPDATE_FANFARE      ; advance the level-up fanfare notes
         rts
@@ -5524,6 +5560,8 @@ CLAIM_COLORS:
 GAMEPLAY_BITMAP = $4000     ; 8000 bytes for hires bitmap ($4000-$5F3F)
 GAMEPLAY_SCREEN = $6000     ; Screen RAM for bitmap colors ($6000-$63E7)
 GAMEPLAY_SPRITES = $6400    ; Sprite data in Bank 1 (after screen)
+PLAYER_DIAMOND_SLOT = (GAMEPLAY_SPRITES - $4000) / 64        ; 144: the diamond
+PLAYER_ARROW_SLOT   = (GAMEPLAY_SPRITES - $4000) / 64 + 4    ; 148: up/down/left/right
 ; Sprite pointer slots: triangles 148-155, explosion burst 156 ($6700)
 EXPLODE_SLOT     = (GAMEPLAY_SPRITES - $4000) / 64 + 4 + 8
 ; Main-Qix plasma-orb animation: 4 frames in slots 157-160 ($6740-$683F)
@@ -5831,6 +5869,11 @@ FILL_TEXTURE    = $C6ED
 ; helpers, which use TEMP3/TEMP4, can't clobber it).
 BAR_IT_LO       = $C6EE
 BAR_IT_HI       = $C6EF
+; Trail-head spark: the cell currently lit bright at the drawing head, so it can
+; be restored to pink when the head advances (see UPDATE_TRAIL_SPARK).
+SPARK_X         = $C6F0
+SPARK_Y         = $C6F1
+SPARK_ON        = $C6F2
 
 FUSE_STALL_DELAY  = 30   ; frames stopped mid-draw before the fuse ignites
 FUSE_ADVANCE_RATE = 6    ; frames the spark spends on each trail tile
@@ -6435,6 +6478,24 @@ COPY_SPRITES_TO_BANK1:
         sta GAMEPLAY_SPRITES + 832, x
         inx
         bne @cpqix
+
+        ; Install the 4 directional player arrows into bank-1 slots 148-151
+        ; ($6500-$65FF = GAMEPLAY_SPRITES + 256). Clear the region, then scatter
+        ; each arrow's 8 shape bytes to rows 0-7 (byte 0) via the ARROW_DEST
+        ; offsets. UPDATE_SPRITES points sprite 0 at the arrow for PLAYER_DIR.
+        ldx #0
+        txa
+@cparr: sta GAMEPLAY_SPRITES + 256, x
+        inx
+        bne @cparr
+        ldx #0
+@cparr2:
+        ldy ARROW_DEST, x
+        lda PLAYER_ARROWS, x
+        sta GAMEPLAY_SPRITES + 256, y
+        inx
+        cpx #32
+        bne @cparr2
 
         ; Sprite 1 (main Qix) renders as a multicolor plasma orb: orange glow
         ; rim + cycling body + white-hot spinning core. MC bit set only for
@@ -7582,6 +7643,149 @@ STAR_PATTERNS:
         !byte $00,$08,$00,$00,$00,$00,$40,$00   ; 7 dots (col 4,row 1)+(col 1,row 6)
 
 ; ============================================================================
+; CLAIM CAPTURE-FLASH (fill phase 6) - in the $3880 gap
+; ----------------------------------------------------------------------------
+; The claim phase (UPDATE_CLAIM_UNMARKED) paints each newly claimed cell solid
+; white and flags it (char-colour RAM = white). This settle phase then sweeps
+; the interior and repaints every flagged cell with its real texture, clearing
+; the flag - so a claimed region flashes white and then fills in. Runs at a
+; higher op count than the claim sweep (per-cell work is light - mostly a
+; colour-RAM check) so the white flash settles quickly.
+SETTLE_OPS = 128
+UPDATE_SETTLE_FLASH:
+        ldx #SETTLE_OPS
+@loop:  stx TEMP4
+        ldx FILL_COL
+        ldy FILL_ROW
+        stx SAVE_X
+        sty SAVE_Y
+        jsr CALC_SCREEN_ADDR            ; sets SCREEN_LO ($0400) + COLOR_LO ($D800)
+        ldy #0
+        lda (COLOR_LO), y
+        and #$0F                        ; colour RAM is 4-bit; the upper nibble
+        cmp #COL_WHITE                  ; reads back as garbage, so mask it first
+        bne @skip                       ; not a white-flagged cell
+        ; settle it: final claim colour + real texture
+        ldx FILL_COLOR_IDX
+        lda CLAIM_COLORS, x
+        ldy #0
+        sta (COLOR_LO), y
+        jsr PAINT_CLAIM_BITMAP
+@skip:
+        inc FILL_COL
+        lda FILL_COL
+        cmp #FIELD_RIGHT
+        bcc @cont
+        lda #FIELD_LEFT + 1
+        sta FILL_COL
+        inc FILL_ROW
+        lda FILL_ROW
+        cmp #FIELD_BOTTOM
+        bcc @cont
+        ; settle done -> restore phase
+        lda #FIELD_TOP + 1
+        sta FILL_ROW
+        lda #FIELD_LEFT + 1
+        sta FILL_COL
+        lda #4
+        sta FILL_STATE
+        rts
+@cont:  ldx TEMP4
+        dex
+        bne @loop
+        rts
+
+; Paint a cell solid white for the capture flash. Reads X=col, Y=row from
+; SAVE_X/SAVE_Y. Tail-calls SET_BITMAP_COLOR.
+PAINT_FLASH_BITMAP:
+        ldx SAVE_X
+        ldy SAVE_Y
+        jsr FILL_BITMAP_CELL            ; solid $FF (all pixels = foreground)
+        ldx SAVE_X
+        ldy SAVE_Y
+        lda #(COL_WHITE * 16)           ; $10: white foreground -> solid white
+        jmp SET_BITMAP_COLOR
+
+; ============================================================================
+; TRAIL-HEAD SPARK - a bright flashing point at the leading edge of the trail
+; while drawing, so the "cut" reads as hot. Recolours the newest trail cell
+; (TRAIL_BUFFER[TRAIL_COUNT-1]) white/yellow each frame and restores the previous
+; one to pink as the head advances. Called each playing frame after UPDATE_FUSE.
+; ============================================================================
+UPDATE_TRAIL_SPARK:
+        lda PLAYER_DRAWING
+        bne @drawing
+        ; not drawing: snuff any active spark back to pink
+        lda SPARK_ON
+        beq @ret
+        ldx SPARK_X
+        ldy SPARK_Y
+        lda #$A0
+        jsr SET_BITMAP_COLOR
+        lda #0
+        sta SPARK_ON
+@ret:   rts
+@drawing:
+        lda TRAIL_COUNT
+        beq @ret                        ; no trail cell yet
+        tax
+        dex                             ; X = TRAIL_COUNT-1 (newest cell)
+        lda TRAIL_BUFFER_X, x
+        sta TEMP1
+        lda TRAIL_BUFFER_Y, x
+        sta TEMP2
+        ; if the head moved, restore the old spark cell to pink first
+        lda SPARK_ON
+        beq @set
+        lda SPARK_X
+        cmp TEMP1
+        bne @restore
+        lda SPARK_Y
+        cmp TEMP2
+        beq @paint                      ; same cell -> just re-flash
+@restore:
+        ldx SPARK_X
+        ldy SPARK_Y
+        lda #$A0                        ; pink trail
+        jsr SET_BITMAP_COLOR
+@set:
+        lda TEMP1
+        sta SPARK_X
+        lda TEMP2
+        sta SPARK_Y
+        lda #1
+        sta SPARK_ON
+@paint:
+        ; flash white / yellow by frame
+        lda FRAME_COUNT
+        and #$04
+        beq @yellow
+        lda #$10                        ; white fg over black
+        bne @doit
+@yellow:
+        lda #$70                        ; yellow fg over black
+@doit:
+        ldx SPARK_X
+        ldy SPARK_Y
+        jmp SET_BITMAP_COLOR            ; tail-call
+
+; Sparx sprite shape: a small 4-point spark ("+"), 6 rows in the sprite's
+; top-left (matching the old square's footprint). Copied to both Sparx sprites
+; by INIT_SPRITES.
+SPARK_SHAPE:
+        !byte $18,$00,$00               ; ...XX...
+        !byte $18,$00,$00               ; ...XX...
+        !byte $FF,$00,$00               ; XXXXXXXX
+        !byte $FF,$00,$00               ; XXXXXXXX
+        !byte $18,$00,$00               ; ...XX...
+        !byte $18,$00,$00               ; ...XX...
+
+; Sparx colour flicker cycle (hot spark colours). UPDATE_SPRITES indexes this
+; by FRAME_COUNT so the sparx crackle; Sparx 2 runs offset for variety.
+SPARK_COLORS:
+        !byte COL_WHITE, COL_YELLOW, COL_ORANGE, COL_YELLOW
+
+; ============================================================================
 * = $3B00
 
 ; ============================================================================
@@ -8304,6 +8508,21 @@ DRAW_BEVEL_CELL:
 BEVEL_H: !byte $FF,$FF,$FF,$FF,$00,$00,$00,$00
 ; left/right bar: light nibble on left half, dark nibble on right half
 BEVEL_V: !byte $F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0
+
+; Directional player arrows (8 shape bytes each, byte 0 of rows 0-7). Scattered
+; into bank-1 slots 148-151 by COPY_SPRITES_TO_BANK1; ARROW_DEST holds the
+; per-byte offset into the 64-byte slot (row*3). Order matches PLAYER_DIR
+; (1=up 2=down 3=left 4=right).
+PLAYER_ARROWS:
+        !byte $18,$18,$3C,$3C,$7E,$7E,$FF,$FF   ; up
+        !byte $FF,$FF,$7E,$7E,$3C,$3C,$18,$18   ; down
+        !byte $18,$38,$78,$F8,$F8,$78,$38,$18   ; left
+        !byte $C0,$E0,$F0,$F8,$F8,$F0,$E0,$C0   ; right
+ARROW_DEST:
+        !byte 0,3,6,9,12,15,18,21
+        !byte 64,67,70,73,76,79,82,85
+        !byte 128,131,134,137,140,143,146,149
+        !byte 192,195,198,201,204,207,210,213
 
 ; ============================================================================
 ; MACHINE / VIDEO-STANDARD DETECTION
