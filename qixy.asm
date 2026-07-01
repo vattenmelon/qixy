@@ -5548,9 +5548,11 @@ CYCLE_COLORS:
         !byte COL_RED, COL_ORANGE, COL_YELLOW, COL_LGREEN
 
 CLAIM_COLORS:
-        ; Neon synthwave palette - vibrant colors that pop against black
-        !byte COL_CYAN, COL_PINK, COL_LGREEN, COL_YELLOW
-        !byte COL_PURPLE, COL_LBLUE, COL_ORANGE, COL_GREEN
+        ; Cohesive neon-synthwave cycle (cyan / magenta / purple / light-blue /
+        ; neon-green) to sit with the blue-steel frame and HUD. The old set mixed
+        ; in yellow/orange/dark-green, which clashed with that cool theme.
+        !byte COL_CYAN, COL_PINK, COL_PURPLE, COL_LBLUE
+        !byte COL_LGREEN, COL_PINK, COL_CYAN, COL_PURPLE
 
 ; ============================================================================
 ; HIRES BITMAP ROUTINES (placed here at $2C00+ to avoid charset corruption)
@@ -7800,8 +7802,9 @@ SPARK_COLORS:
 ; Background (low-nibble) partner for each CLAIM_COLORS entry: a darker shade of
 ; the same hue shows through the pattern's "0" pixels. Same index as CLAIM_COLORS.
 CLAIM_COLORS_BG:
-        !byte COL_BLUE, COL_RED, COL_GREEN, COL_ORANGE
-        !byte COL_BLUE, COL_BLUE, COL_BROWN, COL_DGREY
+        ; Darker partner per CLAIM_COLORS hue (shown through the slow-draw weave)
+        !byte COL_BLUE, COL_PURPLE, COL_BLUE, COL_BLUE
+        !byte COL_GREEN, COL_PURPLE, COL_BLUE, COL_BLUE
 
 ; Diagonal-stripe weave (hires, MSB = leftmost pixel). A rotate-left-by-one each
 ; row gives continuous 2px stripes that tile seamlessly across cell edges
