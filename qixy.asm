@@ -249,9 +249,12 @@ VIC_SPRITE_EXPY = $D017
 VIC_MEMSETUP    = $D018
 VIC_IRQ         = $D019
 VIC_SPRITE_PRI  = $D01B
+VIC_SPRITE_MCM  = $D01C     ; Sprite multicolor enable (per-sprite bit)
 VIC_SPRITE_EXPX = $D01D
 VIC_BORDER      = $D020
 VIC_BGCOLOR     = $D021
+VIC_SPRITE_MC0  = $D025     ; Shared sprite multicolor 0 (bit pair 01)
+VIC_SPRITE_MC1  = $D026     ; Shared sprite multicolor 1 (bit pair 11)
 VIC_SPRITE_COL  = $D027
 
 SID_FREQ_LO1    = $D400
@@ -952,6 +955,9 @@ DISABLE_BITMAP_MODE:
         ; Re-enable sprites
         lda #%00001111
         sta VIC_SPRITE_EN
+        ; Keep all title sprites hires (gameplay leaves sprite 1 multicolor)
+        lda #0
+        sta VIC_SPRITE_MCM
         rts
 
 ; Copy color RAM data for title screen
@@ -1174,13 +1180,12 @@ DRAW_BORDER_TILE:
         ldy #0
         lda #CHAR_BORDER
         sta (SCREEN_LO), y
-        lda #COL_CYAN           ; Neon cyan border
+        lda #COL_CYAN           ; char-map colour (vestigial in bitmap mode)
         sta (COLOR_LO), y
-        ; Fill bitmap cell (for display)
+        ; Draw the cell as a beveled frame segment (pattern + 2-tone colour)
         ldx SAVE_X
         ldy SAVE_Y
-        jsr FILL_BITMAP_CELL
-        rts
+        jmp DRAW_BEVEL_CELL     ; tail-call: paints bitmap + colour, then rts
 
 DRAW_EMPTY_TILE:
         stx SAVE_X
@@ -1840,6 +1845,18 @@ COMPLETE_CLAIM:
         ; Latch the slow-draw 2x bonus for this claim now - DRAW_SLOW would be
         ; reset if the player starts a new draw while this fill is still running.
         jsr SET_CLAIM_STEP
+
+        ; Pick this claim's fast-claim material at random (0..TEX_COUNT-1) so the
+        ; whole region shares one texture. Ignored by slow draws (they weave).
+        jsr RANDOM
+        and #$07
+        cmp #TEX_COUNT
+        bcc @tex_ok
+        sbc #TEX_COUNT          ; fold 5..7 back into 0..2 (carry set from cmp)
+@tex_ok:
+        tax
+        lda TEX_LB, x
+        sta FILL_TEXTURE
 
         ; Save current percentage before claim (for extra life check)
         lda PERCENT_CLAIMED
@@ -3229,6 +3246,16 @@ UPDATE_SPRITES:
         clc
         adc #50             ; Standard C64 Y offset
         sta VIC_SPRITE_Y1
+
+        ; Animate the Qix: spin the plasma-orb core by cycling sprite 1's
+        ; pointer through the 4 frames, advancing one frame every 4 game frames.
+        lda FRAME_COUNT
+        lsr
+        lsr
+        and #$03
+        clc
+        adc #QIX_ANIM_SLOT
+        sta GAMEPLAY_SCREEN + $3F9
 
         ; Sparx 1 sprite (sprite 2)
         lda SPARX1_X
@@ -5026,14 +5053,14 @@ UPDATE_QIX2:
         sta QIX2_Y_LO
         lda TEMP3
         sta QIX2_Y_HI
-        jmp QIX2_SET_ORIENTATION     ; re-point triangle along heading, then rts
+        rts                          ; X and Y moves committed
 @bounce_y:
         lda QIX2_DY
         eor #$FF
         clc
         adc #1
         sta QIX2_DY
-        jmp QIX2_SET_ORIENTATION     ; heading changed on bounce -> re-point
+        rts                          ; bounced off a Y wall
 
 ; Is the tile at column X, row Y solid (blocked) for the second Qix?
 ; Passable = empty/unclaimed (CHAR_EMPTY) or the fill-phase "marked empty" ($20).
@@ -5054,15 +5081,11 @@ QIX2_TILE_SOLID:
 ; ============================================================================
 ; INIT SECOND QIX (called from INIT_LEVEL each level)
 ; ============================================================================
-; Installs the triangle sprite shape + pointer (cheap, done every level), then
-; either activates the second Qix in the centre with a random launch angle
-; (level 6+) or disables sprite 4 (earlier levels).
+; Either activates the second Qix in the centre with a random launch angle
+; (level 6+) or disables sprite 4 (earlier levels). Sprite 4 renders as a
+; multicolor plasma orb (DRAW_QIX2_ORB), sharing the animated frames installed
+; once by COPY_SPRITES_TO_BANK1.
 INIT_QIX2:
-        ; Gameplay runs in VIC Bank 1 ($4000-$7FFF). The 8 directional triangle
-        ; sprites (slots 148-155, $6500-$66FF) are installed once by
-        ; COPY_SPRITES_TO_BANK1; the live sprite-4 pointer at GAMEPLAY_SCREEN+$3FC
-        ; selects the one matching the current heading (QIX2_SET_ORIENTATION).
-
         ; Never inherit a half-finished explosion from the previous level
         lda #0
         sta QIX2_EXPLODE
@@ -5114,8 +5137,6 @@ INIT_QIX2:
         adc #1
         sta QIX2_DY
 @dyp:
-        ; Point the triangle along its launch heading
-        jsr QIX2_SET_ORIENTATION
         ; Enable sprite 4
         lda VIC_SPRITE_EN
         ora #$10
@@ -5161,26 +5182,17 @@ DRAW_QIX2_SPRITE:
         lda QIX2_EXPLODE
         bne @explode
 
-        ; --- normal triangle: single-size, green/white flash ---
-        lda VIC_SPRITE_EXPX
-        and #$EF
-        sta VIC_SPRITE_EXPX
-        lda VIC_SPRITE_EXPY
-        and #$EF
-        sta VIC_SPRITE_EXPY
-        ; Flash between green and white (toggles every 8 frames)
-        lda FRAME_COUNT
-        and #$08
-        beq @green
-        lda #COL_WHITE
-        jmp @setcol
-@green:
-        lda #COL_GREEN
-@setcol:
-        sta VIC_SPRITE_COL + 4      ; sprite 4 color = $D02B
-        rts
+        ; --- flying: multicolor plasma orb (a sibling of the main Qix) ---
+        ; Body of this branch lives in DRAW_QIX2_ORB in the $3B00 block; the
+        ; $2460 relocated block this routine sits in caps at SPRITE_RAM ($2800).
+        jmp DRAW_QIX2_ORB
 
 @explode:
+        ; Hires burst frame: turn sprite 4's multicolor OFF so the bitmap
+        ; explosion shape renders as designed (multicolor would misread it).
+        lda VIC_SPRITE_MCM
+        and #$EF
+        sta VIC_SPRITE_MCM
         ; Point sprite 4 at the explosion frame and blow it up double-size
         lda #EXPLODE_SLOT
         sta GAMEPLAY_SCREEN + $3FC
@@ -5513,6 +5525,8 @@ GAMEPLAY_SCREEN = $6000     ; Screen RAM for bitmap colors ($6000-$63E7)
 GAMEPLAY_SPRITES = $6400    ; Sprite data in Bank 1 (after screen)
 ; Sprite pointer slots: triangles 148-155, explosion burst 156 ($6700)
 EXPLODE_SLOT     = (GAMEPLAY_SPRITES - $4000) / 64 + 4 + 8
+; Main-Qix plasma-orb animation: 4 frames in slots 157-160 ($6740-$683F)
+QIX_ANIM_SLOT    = EXPLODE_SLOT + 1
 
 ; Enable HIRES bitmap mode for gameplay
 ; VIC Bank 1 ($4000-$7FFF), hires bitmap mode
@@ -5805,6 +5819,9 @@ FUSE_INDEX      = $C6E9  ; trail-buffer index the spark sits on (0 = start)
 FUSE_STALL      = $C6EA  ; consecutive frames stalled while drawing
 FUSE_TIMER      = $C6EB  ; countdown between spark advances
 FUSE_PREV_COUNT = $C6EC  ; TRAIL_COUNT last frame (did the player lay a tile?)
+; Pattern low-byte for the current fast claim's texture, picked pseudo-randomly
+; once per claim in COMPLETE_CLAIM so a whole claimed region shares one material.
+FILL_TEXTURE    = $C6ED
 
 FUSE_STALL_DELAY  = 30   ; frames stopped mid-draw before the fuse ignites
 FUSE_ADVANCE_RATE = 6    ; frames the spark spends on each trail tile
@@ -6394,16 +6411,6 @@ COPY_SPRITES_TO_BANK1:
         lda #%00001111
         sta VIC_SPRITE_EN
 
-        ; Install the 8 directional triangle sprites for the second Qix into
-        ; bank-1 slots 148-155 ($6500-$66FF). 512 bytes = two interleaved pages.
-        ldx #0
-@cpdir: lda QIX2_SPRITE_DIRS, x
-        sta GAMEPLAY_SPRITES + 256, x
-        lda QIX2_SPRITE_DIRS + 256, x
-        sta GAMEPLAY_SPRITES + 512, x
-        inx
-        bne @cpdir
-
         ; Install the explosion burst frame into slot 156 ($6700)
         ldx #0
 @cpexp: lda QIX2_EXPLODE_SPRITE, x
@@ -6411,64 +6418,24 @@ COPY_SPRITES_TO_BANK1:
         inx
         cpx #64
         bne @cpexp
-        rts
 
-; Pick the triangle facing the current heading and point sprite 4 at it.
-; Direction from signed (QIX2_DX, QIX2_DY); 8-way octant split (~26.5 deg).
-; Slot index 0=E 1=SE 2=S 3=SW 4=W 5=NW 6=N 7=NE -> pointer = base + index.
-QIX2_SET_ORIENTATION:
-        lda QIX2_DX             ; adx = |DX|
-        bpl @ax
-        eor #$FF
-        clc
-        adc #1
-@ax:    sta TEMP1
-        lda QIX2_DY             ; ady = |DY|
-        bpl @ay
-        eor #$FF
-        clc
-        adc #1
-@ay:    sta TEMP2
+        ; Install the 4 animated Qix plasma-orb frames into slots 157-160
+        ; ($6740-$683F = GAMEPLAY_SPRITES + 832). 4 x 64 = 256 bytes.
+        ldx #0
+@cpqix: lda QIX_FRAMES, x
+        sta GAMEPLAY_SPRITES + 832, x
+        inx
+        bne @cpqix
 
-        lda TEMP2
-        asl                     ; 2*ady
-        cmp TEMP1
-        bcc @horiz              ; 2*ady < adx -> horizontal
-        lda TEMP1
-        asl                     ; 2*adx
-        cmp TEMP2
-        bcc @vert               ; 2*adx < ady -> vertical
-
-        ; --- diagonal ---
-        lda QIX2_DX
-        bmi @dleft
-        ldx #7                  ; DX>0: NE
-        lda QIX2_DY
-        bmi @set
-        ldx #1                  ; SE
-        bpl @set
-@dleft:
-        ldx #5                  ; DX<0: NW
-        lda QIX2_DY
-        bmi @set
-        ldx #3                  ; SW
-        bpl @set
-@horiz:
-        ldx #0                  ; E
-        lda QIX2_DX
-        bpl @set
-        ldx #4                  ; W
-        bpl @set
-@vert:
-        ldx #6                  ; N
-        lda QIX2_DY
-        bmi @set
-        ldx #2                  ; S
-@set:
-        txa
-        clc
-        adc #(GAMEPLAY_SPRITES - $4000) / 64 + 4   ; base slot 148
-        sta GAMEPLAY_SCREEN + $3FC
+        ; Sprite 1 (main Qix) renders as a multicolor plasma orb: orange glow
+        ; rim + cycling body + white-hot spinning core. MC bit set only for
+        ; sprite 1 so the hires player/sparx sprites are unaffected.
+        lda #%00000010
+        sta VIC_SPRITE_MCM
+        lda #COL_ORANGE
+        sta VIC_SPRITE_MC0
+        lda #COL_WHITE
+        sta VIC_SPRITE_MC1
         rts
 
 ; Bitmap row address lookup table (25 rows)
@@ -7421,197 +7388,6 @@ DRAW_LINE:
         dec LINE_CUR_Y
         jmp @loop
 
-; ============================================================================
-; SECOND QIX DIRECTIONAL TRIANGLE SPRITES (copied to bank 1 $6500 at start)
-; ============================================================================
-; 8 directional triangle sprites for the second Qix (24x21, 64 bytes each)
-; order: 0=E 1=SE 2=S 3=SW 4=W 5=NW 6=N 7=NE  (selected via sprite pointer)
-QIX2_SPRITE_DIRS:
-        ; dir 0 = E
-        !byte $40,$00,$00
-        !byte $70,$00,$00
-        !byte $7C,$00,$00
-        !byte $7F,$00,$00
-        !byte $7F,$C0,$00
-        !byte $7F,$F8,$00
-        !byte $7F,$FE,$00
-        !byte $7F,$FF,$80
-        !byte $7F,$FF,$E0
-        !byte $7F,$FF,$F8
-        !byte $7F,$FF,$F8
-        !byte $7F,$FF,$E0
-        !byte $7F,$FF,$80
-        !byte $7F,$FE,$00
-        !byte $7F,$F8,$00
-        !byte $7F,$C0,$00
-        !byte $7F,$00,$00
-        !byte $7C,$00,$00
-        !byte $70,$00,$00
-        !byte $40,$00,$00
-        !byte $00,$00,$00
-        !byte $00          ; pad to 64 bytes
-        ; dir 1 = SE
-        !byte $03,$F8,$00
-        !byte $07,$F8,$00
-        !byte $0F,$FC,$00
-        !byte $1F,$FC,$00
-        !byte $3F,$FC,$00
-        !byte $7F,$FE,$00
-        !byte $FF,$FE,$00
-        !byte $FF,$FE,$00
-        !byte $FF,$FF,$00
-        !byte $FF,$FF,$00
-        !byte $FF,$FF,$00
-        !byte $3F,$FF,$80
-        !byte $07,$FF,$80
-        !byte $00,$FF,$C0
-        !byte $00,$1F,$C0
-        !byte $00,$03,$C0
-        !byte $00,$00,$E0
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00          ; pad to 64 bytes
-        ; dir 2 = S
-        !byte $3F,$FF,$F8
-        !byte $3F,$FF,$F8
-        !byte $1F,$FF,$F0
-        !byte $1F,$FF,$F0
-        !byte $0F,$FF,$E0
-        !byte $0F,$FF,$E0
-        !byte $07,$FF,$C0
-        !byte $07,$FF,$C0
-        !byte $03,$FF,$80
-        !byte $03,$FF,$80
-        !byte $01,$FF,$00
-        !byte $01,$FF,$00
-        !byte $00,$FE,$00
-        !byte $00,$FE,$00
-        !byte $00,$7C,$00
-        !byte $00,$7C,$00
-        !byte $00,$38,$00
-        !byte $00,$38,$00
-        !byte $00,$10,$00
-        !byte $00,$10,$00
-        !byte $00,$10,$00
-        !byte $00          ; pad to 64 bytes
-        ; dir 3 = SW
-        !byte $00,$3F,$80
-        !byte $00,$3F,$C0
-        !byte $00,$7F,$E0
-        !byte $00,$7F,$F0
-        !byte $00,$7F,$F8
-        !byte $00,$FF,$FC
-        !byte $00,$FF,$FE
-        !byte $00,$FF,$FF
-        !byte $01,$FF,$FF
-        !byte $01,$FF,$FF
-        !byte $01,$FF,$FF
-        !byte $03,$FF,$F8
-        !byte $03,$FF,$C0
-        !byte $07,$FE,$00
-        !byte $07,$F0,$00
-        !byte $07,$80,$00
-        !byte $0E,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00          ; pad to 64 bytes
-        ; dir 4 = W
-        !byte $00,$00,$04
-        !byte $00,$00,$1C
-        !byte $00,$00,$7C
-        !byte $00,$01,$FC
-        !byte $00,$07,$FC
-        !byte $00,$3F,$FC
-        !byte $00,$FF,$FC
-        !byte $03,$FF,$FC
-        !byte $0F,$FF,$FC
-        !byte $3F,$FF,$FC
-        !byte $3F,$FF,$FC
-        !byte $0F,$FF,$FC
-        !byte $03,$FF,$FC
-        !byte $00,$FF,$FC
-        !byte $00,$3F,$FC
-        !byte $00,$07,$FC
-        !byte $00,$01,$FC
-        !byte $00,$00,$7C
-        !byte $00,$00,$1C
-        !byte $00,$00,$04
-        !byte $00,$00,$00
-        !byte $00          ; pad to 64 bytes
-        ; dir 5 = NW
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $0E,$00,$00
-        !byte $07,$80,$00
-        !byte $07,$F0,$00
-        !byte $07,$FE,$00
-        !byte $03,$FF,$C0
-        !byte $03,$FF,$F8
-        !byte $01,$FF,$FF
-        !byte $01,$FF,$FF
-        !byte $01,$FF,$FF
-        !byte $00,$FF,$FF
-        !byte $00,$FF,$FE
-        !byte $00,$FF,$FC
-        !byte $00,$7F,$F8
-        !byte $00,$7F,$F0
-        !byte $00,$7F,$E0
-        !byte $00,$3F,$C0
-        !byte $00,$3F,$80
-        !byte $00,$3F,$00
-        !byte $00          ; pad to 64 bytes
-        ; dir 6 = N
-        !byte $00,$10,$00
-        !byte $00,$10,$00
-        !byte $00,$38,$00
-        !byte $00,$38,$00
-        !byte $00,$7C,$00
-        !byte $00,$7C,$00
-        !byte $00,$FE,$00
-        !byte $00,$FE,$00
-        !byte $01,$FF,$00
-        !byte $01,$FF,$00
-        !byte $03,$FF,$80
-        !byte $03,$FF,$80
-        !byte $07,$FF,$C0
-        !byte $07,$FF,$C0
-        !byte $0F,$FF,$E0
-        !byte $0F,$FF,$E0
-        !byte $1F,$FF,$F0
-        !byte $1F,$FF,$F0
-        !byte $3F,$FF,$F8
-        !byte $3F,$FF,$F8
-        !byte $7F,$FF,$FC
-        !byte $00          ; pad to 64 bytes
-        ; dir 7 = NE
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$00
-        !byte $00,$00,$E0
-        !byte $00,$03,$C0
-        !byte $00,$1F,$C0
-        !byte $00,$FF,$C0
-        !byte $07,$FF,$80
-        !byte $3F,$FF,$80
-        !byte $FF,$FF,$00
-        !byte $FF,$FF,$00
-        !byte $FF,$FF,$00
-        !byte $FF,$FE,$00
-        !byte $FF,$FE,$00
-        !byte $7F,$FE,$00
-        !byte $3F,$FC,$00
-        !byte $1F,$FC,$00
-        !byte $0F,$FC,$00
-        !byte $07,$F8,$00
-        !byte $03,$F8,$00
-        !byte $01,$F8,$00
-        !byte $00          ; pad to 64 bytes
-
 ; Explosion burst (slot 156) - a jagged star, drawn double-size when a trapped
 ; second Qix detonates. 24x21, 64 bytes.
 QIX2_EXPLODE_SPRITE:
@@ -7697,9 +7473,26 @@ CLAIM_COLORS_BG:
 SLOW_PATTERN:
         !byte $33, $66, $CC, $99, $33, $66, $CC, $99
 
-; Like FILL_BITMAP_CELL, but writes the SLOW_PATTERN diagonal weave instead of
-; a solid $FF block. Input: X = column (0-39), Y = row (0-24). Preserves X, Y.
+; Fast-claim textures (hires, MSB = leftmost pixel). "1" bits take the
+; CLAIM_COLORS hue, "0" bits stay black, so a normal claim reads as a lit
+; material panel of its hue instead of a flat block. COMPLETE_CLAIM picks one at
+; random per claim (via TEX_LB), so the board becomes a patchwork of materials.
+; All patterns tile seamlessly (period divides 8) and MUST stay in SLOW_PATTERN's
+; page - the fill routine self-modifies only the low byte to select among them.
+TEX_BRICK:   !byte $FE, $FE, $FE, $00, $EF, $EF, $EF, $00   ; masonry
+TEX_GRID:    !byte $00, $7F, $7F, $7F, $7F, $7F, $7F, $7F   ; tiled grid
+TEX_SLATS:   !byte $FF, $FF, $FF, $00, $FF, $FF, $FF, $00   ; horizontal panels
+TEX_DOTS:    !byte $7F, $FF, $FF, $FF, $F7, $FF, $FF, $FF   ; perforated
+TEX_CHECKER: !byte $CC, $CC, $33, $33, $CC, $CC, $33, $33   ; halftone dither
+; Low-byte lookup for the 5 textures (COMPLETE_CLAIM indexes this 0..4).
+TEX_LB: !byte <TEX_BRICK, <TEX_GRID, <TEX_SLATS, <TEX_DOTS, <TEX_CHECKER
+TEX_COUNT = 5
+
+; Like FILL_BITMAP_CELL, but writes an 8-byte pattern instead of a solid $FF
+; block. Input: A = low byte of the pattern (SLOW_PATTERN or FAST_TEXTURE, which
+; share a page), X = column (0-39), Y = row (0-24). Preserves X, Y.
 FILL_BITMAP_CELL_PATTERN:
+        sta @src+1                  ; self-modify the pattern source low byte
         stx TEMP3
         sty TEMP4
         ; Get row base address
@@ -7721,11 +7514,11 @@ FILL_BITMAP_CELL_PATTERN:
         inc SCREEN_HI
 +       ; Write the 8 pattern bytes
         ldy #0
--       lda SLOW_PATTERN, y
+@src:   lda SLOW_PATTERN, y         ; low byte patched to SLOW_PATTERN/FAST_TEXTURE
         sta (SCREEN_LO), y
         iny
         cpy #8
-        bne -
+        bne @src
         ldx TEMP3
         ldy TEMP4
         rts
@@ -7733,7 +7526,7 @@ FILL_BITMAP_CELL_PATTERN:
 ; Paint the bitmap for a freshly claimed cell. Reads X=column, Y=row from
 ; SAVE_X/SAVE_Y (both claim paths set them). The texture is chosen by
 ; CLAIM_SCORE_STEP, latched at COMPLETE_CLAIM:
-;   fast claim (1) -> solid block, foreground hue over black
+;   fast claim (1) -> brick texture, foreground hue over black
 ;   slow draw  (2) -> diagonal two-tone weave: bright CLAIM_COLORS hue stripes
 ;                     over the darker CLAIM_COLORS_BG partner
 ; Tail-calls SET_BITMAP_COLOR, so it returns to the caller.
@@ -7742,10 +7535,11 @@ PAINT_CLAIM_BITMAP:
         cmp #2
         beq @slow
 
-        ; --- fast claim: solid block, black background ---
+        ; --- fast claim: random material texture, black background ---
         ldx SAVE_X
         ldy SAVE_Y
-        jsr FILL_BITMAP_CELL
+        lda FILL_TEXTURE        ; low byte picked once per claim in COMPLETE_CLAIM
+        jsr FILL_BITMAP_CELL_PATTERN
         ldx FILL_COLOR_IDX
         lda CLAIM_COLORS, x
         asl
@@ -7757,6 +7551,7 @@ PAINT_CLAIM_BITMAP:
 @slow:  ; --- slow draw: diagonal two-tone weave ---
         ldx SAVE_X
         ldy SAVE_Y
+        lda #<SLOW_PATTERN
         jsr FILL_BITMAP_CELL_PATTERN
         ldx FILL_COLOR_IDX
         lda CLAIM_COLORS, x
@@ -8188,6 +7983,158 @@ FUSE_PAINT:
         ldy TEMP1               ; Y = row
         pla                     ; A = colour
         jmp SET_BITMAP_COLOR    ; preserves X/Y, returns to our caller
+
+; ============================================================================
+; QIX PLASMA-ORB SPRITE FRAMES (multicolor)
+; ----------------------------------------------------------------------------
+; Four 64-byte frames of a glowing plasma orb whose white-hot core bar spins
+; (horizontal -> diagonal -> vertical -> diagonal). Installed once per level by
+; COPY_SPRITES_TO_BANK1 into bank-1 slots QIX_ANIM_SLOT..+3 ($6740-$683F);
+; UPDATE_SPRITES cycles sprite 1's pointer through them every 4 frames.
+; Sprite 1 runs multicolor: pixel 01 = MC0 (orange rim, $D025), 10 = the
+; cycling QIX_COLORS body ($D027+1), 11 = MC1 (white-hot core, $D026).
+; Generated by tools-scratch qixgen.py; edit there and repaste, not by hand.
+; ============================================================================
+QIX_FRAMES:
+        ; frame 0
+        !byte 0,0,0,0,0,0,0,0,0,0,20,0,0,85,0,1
+        !byte 105,64,1,170,64,1,170,64,2,170,128,7,255,208,7,255
+        !byte 208,7,255,208,2,170,128,1,170,64,1,170,64,1,105,64
+        !byte 0,85,0,0,20,0,0,0,0,0,0,0,0,0,0,0
+        ; frame 1
+        !byte 0,0,0,0,0,0,0,0,0,0,20,0,0,85,0,1
+        !byte 105,64,1,234,64,1,250,64,2,250,128,6,254,144,6,190
+        !byte 144,6,191,144,2,175,128,1,175,64,1,171,64,1,105,64
+        !byte 0,85,0,0,20,0,0,0,0,0,0,0,0,0,0,0
+        ; frame 2
+        !byte 0,0,0,0,0,0,0,0,0,0,20,0,0,85,0,1
+        !byte 125,64,1,190,64,1,190,64,2,190,128,6,190,144,6,190
+        !byte 144,6,190,144,2,190,128,1,190,64,1,190,64,1,125,64
+        !byte 0,85,0,0,20,0,0,0,0,0,0,0,0,0,0,0
+        ; frame 3
+        !byte 0,0,0,0,0,0,0,0,0,0,20,0,0,85,0,1
+        !byte 105,64,1,171,64,1,175,64,2,175,128,6,191,144,6,190
+        !byte 144,6,254,144,2,250,128,1,250,64,1,234,64,1,105,64
+        !byte 0,85,0,0,20,0,0,0,0,0,0,0,0,0,0,0
+
+; ============================================================================
+; DRAW_QIX2_ORB - flying-state look for the second Qix (sprite 4)
+; ----------------------------------------------------------------------------
+; Renders QIX2 as a multicolor plasma orb, a sibling of the main Qix. Split out
+; here (in the roomy $3B00 block) because its caller DRAW_QIX2_SPRITE lives in
+; the $2460 relocated block, which caps at SPRITE_RAM ($2800). Tail-called via
+; jmp, so it returns straight to DRAW_QIX2_SPRITE's caller.
+; ============================================================================
+DRAW_QIX2_ORB:
+        ; single size (clear any leftover expand from a prior explosion)
+        lda VIC_SPRITE_EXPX
+        and #$EF
+        sta VIC_SPRITE_EXPX
+        lda VIC_SPRITE_EXPY
+        and #$EF
+        sta VIC_SPRITE_EXPY
+        ; sprite 4 multicolor on (shares MC0 orange rim / MC1 white-hot core)
+        lda VIC_SPRITE_MCM
+        ora #$10
+        sta VIC_SPRITE_MCM
+        ; Spin the plasma core by cycling the pointer through the 4 shared
+        ; frames, offset half a cycle (eor #2) from Qix 1 so the two orbs never
+        ; spin in lockstep.
+        lda FRAME_COUNT
+        lsr
+        lsr
+        and #$03
+        eor #$02
+        clc
+        adc #QIX_ANIM_SLOT
+        sta GAMEPLAY_SCREEN + $3FC      ; sprite 4 pointer -> plasma frame
+        ; Body still flashes green/white so QIX2 keeps its distinct, hotter
+        ; identity versus the main Qix's slow hue cycle.
+        lda FRAME_COUNT
+        and #$08
+        beq @green
+        lda #COL_WHITE
+        jmp @setcol
+@green:
+        lda #COL_GREEN
+@setcol:
+        sta VIC_SPRITE_COL + 4          ; sprite 4 body colour = $D02B
+        rts
+
+; ============================================================================
+; DRAW_BEVEL_CELL - beveled playfield-frame cell (sprite 4's neighbour in the
+; roomy $3B00 block; called from DRAW_BORDER_TILE, which is in the tight <$2000
+; block, so the bevel logic can't live there).
+; ----------------------------------------------------------------------------
+; Replaces the old flat solid ($FF) border cell with a raised neon bezel lit
+; from the upper-left, using three tones across the ring (only two per cell, as
+; hires allows). A light-blue "face" is kept everywhere for identity; the
+; top/left cells add a white highlight, the bottom/right cells add a blue shadow:
+;   light side (top row / left col): white 1-bits over light-blue 0-bits  ($1E)
+;   dark  side (bottom row/right col): light-blue 1-bits over blue 0-bits ($E6)
+; Pattern splits the tones within the cell along the bar:
+;   left/right columns -> vertical split  (BEVEL_V, light nibble on the left)
+;   top/bottom rows     -> horizontal split (BEVEL_H, light nibble on top)
+; So: white highlight wraps top+left, light-blue face throughout, blue shadow on
+; bottom+right. Input X=col, Y=row (also in SAVE_X/SAVE_Y). Tail-calls
+; SET_BITMAP_COLOR, returning to DRAW_BORDER_TILE's caller with X/Y preserved
+; (the frame loops depend on that).
+; ============================================================================
+BEVEL_LIGHTCOL = COL_WHITE * 16 + COL_LBLUE  ; $1E highlight over light-blue face
+BEVEL_DARKCOL  = COL_LBLUE * 16 + COL_BLUE   ; $E6 light-blue face over blue shadow
+
+DRAW_BEVEL_CELL:
+        ; choose colour: light side = top row or left column, else dark side
+        lda #BEVEL_LIGHTCOL
+        cpy #FIELD_TOP
+        beq +
+        cpx #FIELD_LEFT
+        beq +
+        lda #BEVEL_DARKCOL
++       sta TEMP1                       ; hold chosen colour across the fill
+        ; pick H or V pattern by column (corners fall to V)
+        cpx #FIELD_LEFT
+        beq @v
+        cpx #FIELD_RIGHT
+        beq @v
+        lda #<BEVEL_H
+        jmp @havepat
+@v:     lda #<BEVEL_V
+@havepat:
+        sta @src+1                      ; self-modify the pattern source low byte
+        ; cell bitmap address = BITMAP_ROW[y] + col*8
+        lda BITMAP_ROW_LO, y
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, y
+        sta SCREEN_HI
+        txa
+        asl
+        asl
+        asl
+        bcc +
+        inc SCREEN_HI
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ldy #0
+@src:   lda BEVEL_H, y                  ; low byte patched to BEVEL_H or BEVEL_V
+        sta (SCREEN_LO), y
+        iny
+        cpy #8
+        bne @src
+        ; apply the chosen bevel colour to this cell
+        ldx SAVE_X
+        ldy SAVE_Y
+        lda TEMP1
+        jmp SET_BITMAP_COLOR            ; tail-call (preserves X/Y), then rts
+
+; top/bottom bar: light nibble on top half, dark nibble on bottom half (BEVEL_H
+; and BEVEL_V must share a page so the self-modified low byte selects between them)
+BEVEL_H: !byte $FF,$FF,$FF,$FF,$00,$00,$00,$00
+; left/right bar: light nibble on left half, dark nibble on right half
+BEVEL_V: !byte $F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0
 
 ; ============================================================================
 ; MACHINE / VIDEO-STANDARD DETECTION
