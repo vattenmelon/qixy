@@ -1054,7 +1054,7 @@ START_NEW_GAME:
         sta TARGET_PERCENT
         jsr SET_QIX_SPEED       ; seed Qix speed from LEVEL (set to 1 above)
 
-        jsr INIT_LEVEL
+        jsr INIT_LEVEL_BG       ; level 1 -> faint starfield (LEVEL == 1 case)
 
         ; Start the Miami Vice beat fresh
         jsr INIT_MUSIC
@@ -5770,6 +5770,8 @@ INIT_LEVEL_BG:
         ; no separate CLEAR_GAMEPLAY_BITMAP pass is needed.
         jsr INIT_LEVEL
         lda LEVEL
+        cmp #1
+        beq @starfield          ; level 1 -> faint starfield, not a photo
 @mod3:  cmp #3
         bcc @have               ; A < 3 -> remainder in A
         sbc #3                  ; carry set by cmp (A>=3) -> exact subtract
@@ -5784,6 +5786,8 @@ INIT_LEVEL_BG:
         jmp OVERLAY_LEVEL2_BG
 @bg4:
         jmp OVERLAY_LEVEL4_BG
+@starfield:
+        jmp DRAW_STARFIELD          ; tail-call (ends in rts)
 
 ; ============================================================================
 ; OVERLAY LEVEL 2 BACKGROUND
@@ -7500,6 +7504,82 @@ QIX_FRAMES:
         !byte 105,64,1,171,64,1,175,64,2,175,128,6,191,144,6,190
         !byte 144,6,254,144,2,250,128,1,250,64,1,234,64,1,105,64
         !byte 0,85,0,0,20,0,0,0,0,0,0,0,0,0,0,0
+
+; ============================================================================
+; LEVEL-1 STARFIELD (in the $3880 gap, after QIX_FRAMES)
+; ----------------------------------------------------------------------------
+; Levels 2+ reveal photo backgrounds; level 1 alone was dead black. This paints
+; the interior with a sparse, faint dot field so it reads as a dark surface.
+; Each interior cell hashes (col ^ row) & 7 to pick one of 8 patterns - most
+; empty, a few carry a dim dot - giving a scattered starfield rather than a grid.
+; ============================================================================
+STAR_COLOR = COL_DGREY * 16         ; $B0: dim grey dots over black
+
+DRAW_STARFIELD:
+        ldy #FIELD_TOP + 1
+@row:   ldx #FIELD_LEFT + 1
+@col:   jsr DRAW_STAR_TILE
+        inx
+        cpx #FIELD_RIGHT
+        bne @col
+        iny
+        cpy #FIELD_BOTTOM
+        bne @row
+        rts
+
+; Draw one starfield cell. X = column, Y = row. Preserves X, Y.
+DRAW_STAR_TILE:
+        stx TEMP3                   ; col
+        sty TEMP4                   ; row
+        ; pattern source = STAR_PATTERNS + (RANDOM & 7) * 8 (RANDOM keeps X/Y)
+        jsr RANDOM
+        and #$07
+        asl
+        asl
+        asl
+        clc
+        adc #<STAR_PATTERNS
+        sta TEMP1
+        lda #0
+        adc #>STAR_PATTERNS
+        sta TEMP2
+        ; dest cell = BITMAP_ROW[row] + col*8 -> SCREEN_LO/HI
+        ldy TEMP4
+        lda BITMAP_ROW_LO, y
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, y
+        sta SCREEN_HI
+        lda TEMP3
+        asl
+        asl
+        asl
+        bcc +
+        inc SCREEN_HI
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ldy #0
+-       lda (TEMP1), y
+        sta (SCREEN_LO), y
+        iny
+        cpy #8
+        bne -
+        ldx TEMP3
+        ldy TEMP4
+        lda #STAR_COLOR
+        jmp SET_BITMAP_COLOR        ; preserves X/Y, tail-call
+
+STAR_PATTERNS:
+        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 0 empty
+        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 1 empty
+        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 2 empty
+        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 3 empty
+        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 4 empty
+        !byte $00,$00,$20,$00,$00,$00,$00,$00   ; 5 dot (col 2, row 2)
+        !byte $00,$00,$00,$00,$00,$02,$00,$00   ; 6 dot (col 6, row 5)
+        !byte $00,$08,$00,$00,$00,$00,$40,$00   ; 7 dots (col 4,row 1)+(col 1,row 6)
 
 ; ============================================================================
 * = $3B00
