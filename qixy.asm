@@ -487,6 +487,12 @@ PREV_P_KEY      !byte 0
 ; Previous C (cheat) key state for edge detection
 PREV_CHEAT_KEY  !byte 0
 
+; Attract mode: title and high-score table auto-cycle after this many idle
+; frames. ATTRACT_PREV_FIRE edge-detects fire so a button held over from a
+; previous screen doesn't instantly start/skip.
+ATTRACT_TIMER     !byte 0
+ATTRACT_PREV_FIRE !byte 0
+
 ; ----------------------------------------------------------------------------
 ; CHEAT KEY: press C to instantly clear the current level
 ; C is at keyboard row 2 (select $FB), column 4 (bit $10)
@@ -993,6 +999,12 @@ SHOW_TITLE:
         sta VIC_BGCOLOR
         lda #COL_BLACK
         sta VIC_BORDER
+
+        ; Arm attract mode: reset idle timer, swallow any held-over fire
+        lda #0
+        sta ATTRACT_TIMER
+        lda #1
+        sta ATTRACT_PREV_FIRE
         rts
 
 UPDATE_TITLE:
@@ -1003,10 +1015,25 @@ UPDATE_TITLE:
         ; Check fire button
         lda CIA1_PORTA
         and #$10
-        bne @no
+        bne @released
 
-        ; Start game
+        ; Fire pressed - start game on a fresh press only
+        lda ATTRACT_PREV_FIRE
+        bne @no                 ; held over from another screen -> ignore
+        lda #1
+        sta ATTRACT_PREV_FIRE
         jsr START_NEW_GAME
+        rts
+
+@released:
+        lda #0
+        sta ATTRACT_PREV_FIRE
+        ; Attract mode: after an idle spell, flip to the high-score table
+        inc ATTRACT_TIMER
+        bne @no
+        jsr SHOW_HISCORE_TABLE
+        lda #6
+        sta GAME_STATE
 @no:    rts
 
 ; ============================================================================
@@ -4326,6 +4353,11 @@ SHOW_HISCORE_TABLE:
         lda #$16
         sta VIC_MEMPTR
 
+        ; Arm attract mode: reset idle timer, swallow any held-over fire
+        lda #0
+        sta ATTRACT_TIMER
+        lda #1
+        sta ATTRACT_PREV_FIRE
         rts
 
 ; Helper: draw byte (0-99) as 2 decimal digits (Y = screen offset, preserves X)
@@ -4365,6 +4397,19 @@ UPDATE_HISCORE_SHOW:
         dex
         bpl @flash
 
+        ; Blink the "fire=continue" prompt white / dark-grey
+        lda FRAME_COUNT
+        and #$10
+        bne @dim
+        lda #COL_WHITE
+        bne @setcol             ; COL_WHITE != 0 -> always taken
+@dim:   lda #COL_DGREY
+@setcol:
+        ldx #21                 ; prompt is 22 cells wide
+@pr:    sta COLOR_RAM + 529, x
+        dex
+        bpl @pr
+
         ; Check F1 key (row 0, column 4) for save
         lda #$FE                ; Select keyboard row 0
         sta CIA1_PORTA
@@ -4385,9 +4430,22 @@ UPDATE_HISCORE_SHOW:
         ; Check fire button
         lda CIA1_PORTA
         and #$10
-        bne @done
+        bne @released
 
-        ; Return to title
+        ; Fire pressed - start a new game on a fresh press only
+        lda ATTRACT_PREV_FIRE
+        bne @done               ; held over -> ignore
+        lda #1
+        sta ATTRACT_PREV_FIRE
+        jsr START_NEW_GAME
+        rts
+
+@released:
+        lda #0
+        sta ATTRACT_PREV_FIRE
+        ; Attract mode: after an idle spell, flip back to the title
+        inc ATTRACT_TIMER
+        bne @done
         jsr SHOW_TITLE
         lda #0
         sta GAME_STATE

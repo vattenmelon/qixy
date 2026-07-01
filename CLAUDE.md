@@ -105,6 +105,8 @@ Game state controlled by GAME_STATE variable (`$1C`):
 - 5 = high score entry
 - 6 = high score display
 
+**Attract mode**: when idle, the title (state 0) and high-score table (state 6) auto-cycle into each other every ~256 idle frames (`ATTRACT_TIMER` wraps in `UPDATE_TITLE`/`UPDATE_HISCORE_SHOW`; reset by `SHOW_TITLE`/`SHOW_HISCORE_TABLE`). Fire from *either* screen starts a new game, edge-detected via `ATTRACT_PREV_FIRE` (armed to 1 on each screen entry) so a button held over from the previous screen or from gameplay doesn't instantly restart.
+
 ### Core Systems
 - **Player movement**: Joystick port 2 input, sprite-based with trail drawing. **Slow-draw vs fast-draw** (risk/reward): fire is required to *start* a draw; keeping fire held while drawing = a SLOW draw (half move speed via `DRAW_MOVE_THRESHOLD`, threshold 6 vs 3) whose enclosed area scores **2×**; releasing fire mid-draw = a FAST draw at normal speed and 1× score. The bonus only applies if the whole trail stayed slow (`DRAW_SLOW` flag, cleared on any fire-released step), latched at claim time into `CLAIM_SCORE_STEP` (1 or 2) which `ADD_CLAIM_SCORE` adds per claimed tile.
 - **Enemy AI**: Qix (bouncing enemy) and Sparx (border patrol). The Sparx speed is level-scaled by `SET_SPARX_SPEED` using a fixed-point accumulator (`SPARX_RATE`/`SPARX_ACC`, like the Qix): the per-frame rate ramps smoothly from 64 (a move every 4 frames = original speed) at level 1 to 85 (every ~3 frames = the player's own pace) at level 25 via `SPARX_RATE_TBL`, then holds. So Sparx reach full speed only at level 25 and never outrun the player. A second Qix joins at L6+, a third (reverse) Sparx at L8+.
