@@ -3231,6 +3231,7 @@ UPDATE_SPRITES:
         lda #PLAYER_DIAMOND_SLOT
 @p_setptr:
         sta GAMEPLAY_SCREEN + $3F8
+        jsr UPDATE_PLAYER_GLOW  ; sprite-7 halo: position, breath, state colour
 
         ; Qix sprite (sprite 1)
         lda QIX_X
@@ -6441,8 +6442,9 @@ COPY_SPRITES_TO_BANK1:
         inx
         cpx #64
         bne @copy
-        lda #%00001111
-        sta VIC_SPRITE_EN
+        lda #%10001111
+        sta VIC_SPRITE_EN       ; base 4 sprites + the player's glow halo (7)
+        jsr INSTALL_HALO_SPRITES
 
         ; Install the explosion burst frame into slot 156 ($6700)
         ldx #0
@@ -8541,7 +8543,7 @@ START_DEATH_BURST:
         lda #COL_WHITE
         sta VIC_SPRITE_COL + 6
         lda VIC_SPRITE_EN
-        and #$FE                    ; the player vanishes...
+        and #$7E                    ; the player and its halo vanish...
         ora #$40                    ; ...into the burst
         sta VIC_SPRITE_EN
         rts
@@ -8571,11 +8573,11 @@ DEATH_FADE_COLORS: !byte COL_RED, COL_RED, COL_ORANGE, COL_YELLOW
 ; game over, where the field stays playerless under the GAME OVER screen.
 END_DEATH_BURST:
         lda VIC_SPRITE_EN
-        and #$BF                    ; burst off
+        and #$3F                    ; burst off (and keep the halo hidden...)
         ldx LIVES
         dex
         beq +
-        ora #$01                    ; respawning: player visible again
+        ora #$81                    ; ...unless respawning: player + halo back
 +       sta VIC_SPRITE_EN
         lda VIC_SPRITE_EXPX
         and #$BF
@@ -9217,6 +9219,20 @@ BONUS_TXT:    !scr "  bonus ", 0
 GAMEOVER_TXT: !scr "  game over!  ", 0
 PAUSED_TXT:   !scr "  paused  ", 0
 
+; Player halo ring shapes (used by INSTALL_HALO_SPRITES in the $CE60 module;
+; parked here because that module runs close to its $D000 cap).
+; 16 rows x 16 px (2 bytes/row): frame A = 16px diamond ring, frame B = 12px
+; ring (rows 2-13), so the halo breathes.
+HALO_ROWS:
+        !byte $01,$80, $03,$C0, $06,$60, $0C,$30
+        !byte $18,$18, $30,$0C, $60,$06, $C0,$03
+        !byte $C0,$03, $60,$06, $30,$0C, $18,$18
+        !byte $0C,$30, $06,$60, $03,$C0, $01,$80
+        !byte $00,$00, $00,$00, $01,$80, $03,$C0
+        !byte $06,$60, $0C,$30, $18,$18, $30,$0C
+        !byte $30,$0C, $18,$18, $0C,$30, $06,$60
+        !byte $03,$C0, $01,$80, $00,$00, $00,$00
+
 !if * > PAUSE_SAVE { !error "presentation module overflowed into PAUSE_SAVE ($CE00): ", * }
 
 ; ============================================================================
@@ -9327,6 +9343,119 @@ BOLD_DIGITS:
 ; One life = one diamond, matching the player's cutter shape.
 LIFE_ICON:
         !byte $10,$38,$7C,$FE,$7C,$38,$10,$00
+
+; ============================================================================
+; PLAYER GLOW HALO (sprite 7)
+; ----------------------------------------------------------------------------
+; A diamond-ring halo layered under the player (sprite 0 draws on top), making
+; the cutter read as a glowing craft instead of an 8px diamond. The ring
+; breathes between a 16px and 12px diamond every 8 frames, and its colour
+; telegraphs the risk state: calm green pulse cruising the border, yellow
+; flicker on a fast draw, cyan/white strobe while a slow 2x draw is charged.
+; Hidden with the player during the death burst and the level-intro card.
+; ============================================================================
+HALO_SLOT = 152                 ; bank-1 sprite slots 152-153 ($6600-$667F)
+
+; Called from UPDATE_SPRITES right after the player sprite is positioned:
+; sprite 7 tracks sprite 0 offset (-4,-4) so the ring centres on the 8x8
+; player shape in sprite 0's top-left corner. 9-bit X handled via borrow.
+UPDATE_PLAYER_GLOW:
+        lda VIC_SPRITE_X0
+        sec
+        sbc #4
+        sta VIC_SPRITE_X0 + 14  ; sprite 7 X
+        lda VIC_SPRITE_MSB
+        and #$01                ; player's 9th X bit...
+        sbc #0                  ; ...minus the borrow = halo's 9th bit
+        beq @msb_clr
+        lda VIC_SPRITE_MSB
+        ora #$80
+        bne @msb_sta            ; always taken
+@msb_clr:
+        lda VIC_SPRITE_MSB
+        and #$7F
+@msb_sta:
+        sta VIC_SPRITE_MSB
+        lda VIC_SPRITE_Y0
+        sec
+        sbc #4
+        sta VIC_SPRITE_Y0 + 14  ; sprite 7 Y
+        ; breathe: swap ring size every 8 frames
+        lda FRAME_COUNT
+        and #$08
+        lsr
+        lsr
+        lsr
+        clc
+        adc #HALO_SLOT
+        sta GAMEPLAY_SCREEN + $3FF
+        ; colour by risk state
+        lda PLAYER_DRAWING
+        beq @idle
+        lda DRAW_SLOW
+        beq @fast
+        lda FRAME_COUNT         ; slow 2x draw charged: cyan/white strobe
+        and #$02
+        beq @cyan
+        lda #COL_WHITE
+        bne @set                ; always taken
+@cyan:  lda #COL_CYAN
+        bne @set                ; always taken
+@fast:  lda FRAME_COUNT         ; fast draw: light-green/yellow flicker
+        and #$04
+        beq @lgreen
+        lda #COL_YELLOW
+        bne @set                ; always taken
+@idle:  lda FRAME_COUNT         ; cruising: slow green/light-green pulse
+        and #$10
+        beq @green
+@lgreen:
+        lda #COL_LGREEN
+        bne @set                ; always taken
+@green: lda #COL_GREEN
+@set:   sta VIC_SPRITE_COL + 7
+        rts
+
+; Expand HALO_ROWS (16 rows x 2 bytes per frame) into bank-1 sprite slots
+; 152-153. Called from COPY_SPRITES_TO_BANK1 once per game.
+INSTALL_HALO_SPRITES:
+        ldx #127
+        lda #0
+-       sta GAMEPLAY_SPRITES + 512, x
+        dex
+        bpl -
+        ldx #0
+        ldy #0
+-       lda HALO_ROWS, x        ; frame A -> slot 152
+        sta GAMEPLAY_SPRITES + 512, y
+        lda HALO_ROWS + 1, x
+        sta GAMEPLAY_SPRITES + 513, y
+        inx
+        inx
+        iny
+        iny
+        iny
+        cpx #32
+        bne -
+        ldx #0
+        ldy #0
+-       lda HALO_ROWS + 32, x   ; frame B -> slot 153
+        sta GAMEPLAY_SPRITES + 576, y
+        lda HALO_ROWS + 33, x
+        sta GAMEPLAY_SPRITES + 577, y
+        inx
+        inx
+        iny
+        iny
+        iny
+        cpx #32
+        bne -
+        lda #COL_GREEN          ; halo starts calm
+        sta VIC_SPRITE_COL + 7
+        lda VIC_SPRITE_MCM
+        and #$7F                ; halo is hires
+        sta VIC_SPRITE_MCM
+        rts
 
 !if * > $D000 { !error "HUD styling module overflowed into I/O ($D000): ", * }
 
