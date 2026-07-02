@@ -88,7 +88,10 @@ TRAIL_START_Y   = $2D
 ; Flood fill variables
 FILL_STACK_PTR  = $2E
 CLAIMED_COUNT   = $2F       ; For percentage calculation (low byte)
-CLAIMED_COUNT_HI = $41      ; For percentage calculation (high byte) - dedicated to avoid TEMP3 corruption
+CLAIMED_COUNT_HI = $C6FA    ; For percentage calculation (high byte). NOT zero
+                            ; page: $41 collided with MUSIC_MODE - a claim of
+                            ; 256+ cells incremented the music mode and flipped
+                            ; the soundtrack to the sad pattern mid-game.
 TOTAL_COUNT_LO  = $30
 TOTAL_COUNT_HI  = $31
 FLOOD_X         = $32       ; Current flood fill X coordinate (preserved across PUSH_IF_EMPTY)
@@ -399,10 +402,16 @@ MAIN_LOOP:
         beq @hs_entry
         cmp #6
         beq @hs_show
+        cmp #7
+        beq @intro
         jmp MAIN_LOOP
 
 @title:
         jsr UPDATE_TITLE
+        jmp MAIN_LOOP
+
+@intro: ; level intro card (state 7): hold, then paint the level interior
+        jsr UPDATE_INTRO
         jmp MAIN_LOOP
 
 @hs_entry:
@@ -572,16 +581,9 @@ PAUSE_GAME:
         sta SID_CTRL2
         sta SID_CTRL3
 
-        ; Show "PAUSED" message (center of screen, row 12)
-        ldx #0
-@show:  lda PAUSED_TXT, x
-        beq @done
-        sta SCREEN_RAM + 497, x ; Row 12, centered
-        lda #COL_YELLOW
-        sta COLOR_RAM + 497, x
-        inx
-        bne @show
-@done:  rts
+        ; Show "PAUSED" in the gameplay bitmap ($0400 is the logical tile map,
+        ; not the displayed screen), saving the cells underneath for unpause.
+        jmp DRAW_PAUSE_CARD
 
 UNPAUSE_GAME:
         lda #0
@@ -590,15 +592,8 @@ UNPAUSE_GAME:
         ; Restart music
         jsr INIT_MUSIC
 
-        ; Clear "PAUSED" message
-        ldx #5
-@clear: lda #CHAR_EMPTY
-        sta SCREEN_RAM + 497, x
-        lda #COL_DGREY
-        sta COLOR_RAM + 497, x
-        dex
-        bpl @clear
-        rts
+        ; Restore the bitmap cells the pause card covered
+        jmp ERASE_PAUSE_CARD
 
 CHECK_RESUME:
         ; Check joystick for any input
@@ -1049,14 +1044,12 @@ START_NEW_GAME:
         sta TARGET_PERCENT
         jsr SET_QIX_SPEED       ; seed Qix speed from LEVEL (set to 1 above)
 
-        jsr INIT_LEVEL_BG       ; level 1 -> faint starfield (LEVEL == 1 case)
-
         ; Start the Miami Vice beat fresh
         jsr INIT_MUSIC
 
-        lda #1
-        sta GAME_STATE
-        rts
+        ; Level intro card -> GAME_STATE 7; the interior (starfield/photo) is
+        ; painted when the card times out (see UPDATE_INTRO).
+        jmp BEGIN_LEVEL
 
 INIT_LEVEL:
         ; Draw playfield
@@ -3409,12 +3402,9 @@ UPDATE_LEVEL_DONE:
 @pct_ok:
         sta TARGET_PERCENT
 
-        jsr INIT_LEVEL_BG
-
-        lda #1
-        sta MUSIC_ENABLED       ; resume the music engine for the new level
-        sta GAME_STATE
-        rts
+        ; Level intro card -> GAME_STATE 7 (also resumes the music engine);
+        ; the new interior is painted when the card times out (UPDATE_INTRO).
+        jmp BEGIN_LEVEL
 
 @anim:
         ; Celebratory border pulse over the level-clear animation: cycle the
@@ -3436,15 +3426,9 @@ UPDATE_LEVEL_DONE:
 SHOW_GAME_OVER_MSG:
         jsr FLASH_BORDER_RED    ; Flash border red twice
         jsr INIT_SAD_MUSIC      ; Start sad music for game over
-        ldx #0
-@lp:    lda GAMEOVER_TXT, x
-        beq @done
-        sta SCREEN_RAM + 494, x
-        lda #COL_RED
-        sta COLOR_RAM + 494, x
-        inx
-        bne @lp
-@done:  rts
+        ; The old $0400 text write was invisible here (the VIC displays the
+        ; bank-1 bitmap) - draw the card into the bitmap instead.
+        jmp DRAW_GAMEOVER_CARD
 
 ; Flash the screen border red two times, then restore black
 FLASH_BORDER_RED:
@@ -5527,13 +5511,8 @@ FILL_TXT:
         !scr "fill: "
         !byte 0
 
-GAMEOVER_TXT:
-        !scr "game over!"
-        !byte 0
-
-PAUSED_TXT:
-        !scr "paused"
-        !byte 0
+; (GAMEOVER_TXT / PAUSED_TXT moved to the $CC00 presentation module - they are
+; drawn into the bitmap now, and this segment is nearly full.)
 
 CYCLE_COLORS:
         !byte COL_CYAN, COL_LBLUE, COL_PURPLE, COL_PINK
@@ -5788,19 +5767,19 @@ DRAW_SPARX3_SPRITE:
 SPARX3_COLORS: !byte COL_YELLOW, COL_WHITE, COL_GREEN
 
 ; ============================================================================
-; INIT LEVEL WITH BACKGROUND CHECK
+; PAINT LEVEL INTERIOR
 ; ============================================================================
-; Wrapper around INIT_LEVEL that adds level 2 background overlay
+; Fills the playfield interior for the current level. Called by UPDATE_INTRO
+; when the level-intro card times out (which also wipes the card - every
+; interior cell is repainted). The frame/HUD were already drawn by INIT_LEVEL.
 
-INIT_LEVEL_BG:
+PAINT_LEVEL_INTERIOR:
         ; Rotate the three background images across ALL levels, by LEVEL mod 3:
         ;   1 -> level-2 image  (levels 1, 4, 7, ...)
         ;   2 -> level-4 image  (levels 2, 5, 8, ...)
         ;   0 -> level-10 image (levels 3, 6, 9, ...)
         ; Each overlay fully repaints every interior cell's bitmap AND colour
-        ; RAM, so the previous level's background is completely overwritten and
-        ; no separate CLEAR_GAMEPLAY_BITMAP pass is needed.
-        jsr INIT_LEVEL
+        ; RAM, so the previous contents are completely overwritten.
         lda LEVEL
         cmp #1
         beq @starfield          ; level 1 -> faint starfield, not a photo
@@ -5868,6 +5847,14 @@ BAR_IT_HI       = $C6EF
 SPARK_X         = $C6F0
 SPARK_Y         = $C6F1
 SPARK_ON        = $C6F2
+; Presentation cards (level intro / complete / game over / pause), $CC00 module
+CARD_COL        = $C6F3  ; text cursor column
+CARD_ROW        = $C6F4  ; text cursor row
+CARD_COLOR      = $C6F5  ; colour byte for card cells (fg high nibble, bg low)
+CARD_TMP        = $C6F6  ; digit scratch for DRAW_NUM
+CARD_SPR        = $C6F7  ; $D015 saved across the level-intro card
+BONUS_HUNDREDS  = $C6F8  ; level bonus in hundreds, shown by DRAW_CLEAR_CARD
+PAUSE_DRAWN     = $C6F9  ; 1 = pause card on screen and PAUSE_SAVE is valid
 
 FUSE_STALL_DELAY  = 30   ; frames stopped mid-draw before the fuse ignites
 FUSE_ADVANCE_RATE = 6    ; frames the spark spends on each trail tile
@@ -8062,6 +8049,7 @@ PROBE_DIR:
 ; music bass envelope/waveform, so nothing has to be restored afterwards.
 ; ----------------------------------------------------------------------------
 START_LEVEL_UP_FANFARE:
+        jsr DRAW_CLEAR_CARD     ; banner over the frozen field (both clear paths)
         lda #0
         sta MUSIC_ENABLED       ; pause the music engine for the fanfare
         sta SID_CTRL2           ; silence voice 2 (lead) - gate off
@@ -8269,6 +8257,7 @@ ADD_LEVEL_BONUS:
         clc
         adc LEVEL               ; A = LEVEL + overshoot = bonus in hundreds (>=1)
         tax
+        stx BONUS_HUNDREDS      ; shown by DRAW_CLEAR_CARD on the banner
 @loop:
         inc SCORE_MID           ; add 100 points (one "hundred")
         lda SCORE_MID
@@ -8998,6 +8987,249 @@ HS_S_PAL:   !scr "PAL"
 
 * = $C700
 !source "level10_bg.asm"
+
+; ============================================================================
+; PRESENTATION CARDS (level intro / level complete / game over / pause)
+; ----------------------------------------------------------------------------
+; Bitmap-mode text cards for the state transitions. Text is blitted glyph by
+; glyph into the gameplay bitmap via DRAW_BITMAP_CHAR + SET_BITMAP_COLOR (the
+; $0400 text screen is NOT displayed during gameplay - it is the logical tile
+; map). Lives in the zero-fill RAM gap at $CC00, above the level-10 image
+; data (ends ~$CBF8) and below the I/O window; the cruncher squeezes the gap
+; away so it costs no disk bytes. NOTE: the unmerged C128 native port also
+; targets $CC00 - relocate one of the two if they ever meet.
+; ============================================================================
+* = $CC00
+
+INTRO_FRAMES = 90               ; level-intro card duration (~1.5 s PAL)
+
+; Pause card underlay buffer: 10 cells x 8 bitmap bytes + 10 colour bytes.
+; Runtime scratch above this module's code - never part of the .prg.
+PAUSE_WIDTH   = 10
+PAUSE_BMP     = GAMEPLAY_BITMAP + 12*320 + 15*8     ; row 12, cols 15-24
+PAUSE_COL_RAM = GAMEPLAY_SCREEN + 12*40 + 15
+PAUSE_SAVE     = $CE00
+PAUSE_SAVE_COL = $CE50
+
+; --- text plumbing ----------------------------------------------------------
+
+; A = <string, Y = >string, X = start column. CARD_ROW/CARD_COLOR preset.
+; Draws the zero-terminated screen-code string, colouring each cell.
+CARD_PRINT:
+        sta TEMP1
+        sty TEMP2
+        stx CARD_COL
+@lp:    ldy #0
+        lda (TEMP1), y
+        beq @done
+        jsr DRAW_CARD_GLYPH
+        inc TEMP1
+        bne @lp
+        inc TEMP2
+        bne @lp                 ; always taken (strings never end a page at 0)
+@done:  rts
+
+; Draw one glyph (A = screen code) at the card cursor and advance it.
+DRAW_CARD_GLYPH:
+        ldx CARD_COL
+        ldy CARD_ROW
+        jsr DRAW_BITMAP_CHAR    ; preserves X/Y
+        lda CARD_COLOR
+        jsr SET_BITMAP_COLOR    ; preserves X/Y
+        inc CARD_COL
+        rts
+
+; Draw A (0-255) as decimal at the card cursor: two zero-padded digits
+; ("07"), three when the value reaches 100.
+DRAW_NUM:
+        ldx #$2F                ; '0' - 1
+        sec
+@hun:   inx
+        sbc #100
+        bcs @hun
+        adc #100                ; A = remainder 0-99
+        sta CARD_TMP
+        cpx #$30
+        beq @two                ; no hundreds digit
+        txa
+        jsr DRAW_CARD_GLYPH
+@two:   lda CARD_TMP
+        jsr BYTE_TO_DEC         ; -> X = tens glyph, Y = ones glyph
+        sty CARD_TMP
+        txa
+        jsr DRAW_CARD_GLYPH
+        lda CARD_TMP
+        jmp DRAW_CARD_GLYPH
+
+; Two trailing pad spaces so every card sits on a solid black band.
+CARD_PAD2:
+        lda #$20
+        jsr DRAW_CARD_GLYPH
+        lda #$20
+        jmp DRAW_CARD_GLYPH
+
+; --- the cards ---------------------------------------------------------------
+
+; "LEVEL 07" / "TARGET 72%" over the black interior. Erased when the level
+; background paints over it (every interior cell is repainted).
+DRAW_INTRO_CARD:
+        lda #$10                ; white on black
+        sta CARD_COLOR
+        lda #11
+        sta CARD_ROW
+        ldx #14
+        lda #<INTRO1_TXT
+        ldy #>INTRO1_TXT
+        jsr CARD_PRINT          ; "  LEVEL "
+        lda LEVEL
+        jsr DRAW_NUM
+        jsr CARD_PAD2
+        lda #13
+        sta CARD_ROW
+        ldx #13
+        lda #<INTRO2_TXT
+        ldy #>INTRO2_TXT
+        jsr CARD_PRINT          ; "  TARGET "
+        lda TARGET_PERCENT
+        jsr DRAW_NUM
+        lda #$25                ; '%'
+        jsr DRAW_CARD_GLYPH
+        jmp CARD_PAD2
+
+; "LEVEL COMPLETE!" (+ "BONUS 0800" on a real clear) over the frozen field
+; while the border pulses and the fanfare plays. Erased by the next level's
+; BEGIN_LEVEL bitmap clear. The cheat skip awards no bonus (BONUS_HUNDREDS=0).
+DRAW_CLEAR_CARD:
+        lda #$70                ; yellow on black
+        sta CARD_COLOR
+        lda #11
+        sta CARD_ROW
+        ldx #10
+        lda #<CLEAR_TXT
+        ldy #>CLEAR_TXT
+        jsr CARD_PRINT          ; "  LEVEL COMPLETE!  "
+        lda BONUS_HUNDREDS
+        beq @done
+        lda #13
+        sta CARD_ROW
+        ldx #13
+        lda #<BONUS_TXT
+        ldy #>BONUS_TXT
+        jsr CARD_PRINT          ; "  BONUS "
+        lda BONUS_HUNDREDS
+        jsr DRAW_NUM
+        lda #$30                ; append "00" - the bonus is counted in hundreds
+        jsr DRAW_CARD_GLYPH
+        lda #$30
+        jsr DRAW_CARD_GLYPH
+        jmp CARD_PAD2
+@done:  rts
+
+; "GAME OVER!" in red - drawn into the bitmap, so actually visible (the old
+; $0400 write never was). Cleared by the next mode switch / new game.
+DRAW_GAMEOVER_CARD:
+        lda #$20                ; red on black
+        sta CARD_COLOR
+        lda #12
+        sta CARD_ROW
+        ldx #13
+        lda #<GAMEOVER_TXT
+        ldy #>GAMEOVER_TXT
+        jmp CARD_PRINT          ; "  GAME OVER!  "
+
+; --- pause card with underlay save/restore ----------------------------------
+
+DRAW_PAUSE_CARD:
+        lda #1
+        sta PAUSE_DRAWN         ; PAUSE_SAVE is about to become valid
+        ; save the 10 cells underneath (bitmap bytes are contiguous in-row)
+        ldx #79
+@sb:    lda PAUSE_BMP, x
+        sta PAUSE_SAVE, x
+        dex
+        bpl @sb
+        ldx #PAUSE_WIDTH - 1
+@sc:    lda PAUSE_COL_RAM, x
+        sta PAUSE_SAVE_COL, x
+        dex
+        bpl @sc
+        lda #$70                ; yellow on black (as the old text was)
+        sta CARD_COLOR
+        lda #12
+        sta CARD_ROW
+        ldx #15
+        lda #<PAUSED_TXT
+        ldy #>PAUSED_TXT
+        jmp CARD_PRINT          ; "  PAUSED  "
+
+ERASE_PAUSE_CARD:
+        ; Guard: UNPAUSE_GAME can fire spuriously - the boot-time high-score
+        ; disk LOAD leaves PAUSED ($42) nonzero ($08), so the first joystick
+        ; input "resumes" a pause that never happened. Restoring PAUSE_SAVE
+        ; then would smear 90 bytes of uninitialised RAM onto the field.
+        lda PAUSE_DRAWN
+        bne +
+        rts
++       lda #0
+        sta PAUSE_DRAWN
+        ldx #79
+@rb:    lda PAUSE_SAVE, x
+        sta PAUSE_BMP, x
+        dex
+        bpl @rb
+        ldx #PAUSE_WIDTH - 1
+@rc:    lda PAUSE_SAVE_COL, x
+        sta PAUSE_COL_RAM, x
+        dex
+        bpl @rc
+        rts
+
+; --- level intro state machine -----------------------------------------------
+
+; Common level entry (game start, level clear, cheat skip): clean field with
+; frame + HUD, intro card, GAME_STATE = 7. The interior background is painted
+; when the card times out, which wipes the text. Sprites are hidden while the
+; card is up (they still hold the previous level's positions) and restored
+; after, once UPDATE_SPRITES has placed them.
+BEGIN_LEVEL:
+        jsr CLEAR_GAMEPLAY_BITMAP
+        jsr INIT_LEVEL          ; frame + HUD + entity init (interior stays black)
+        lda VIC_SPRITE_EN
+        sta CARD_SPR            ; INIT_QIX2/INIT_SPARX3 just set this level's bits
+        lda #0
+        sta VIC_SPRITE_EN
+        jsr DRAW_INTRO_CARD
+        lda #0
+        sta BONUS_HUNDREDS      ; consumed - the cheat path shows no stale bonus
+        sta PAUSED              ; boot disk LOAD leaves $42 dirty - see above
+        sta PAUSE_DRAWN
+        lda #INTRO_FRAMES
+        sta DEATH_TIMER
+        lda #1
+        sta MUSIC_ENABLED       ; music plays under the card
+        lda #7
+        sta GAME_STATE
+        rts
+
+; GAME_STATE 7 handler: hold the card, then reveal the level and play.
+UPDATE_INTRO:
+        dec DEATH_TIMER
+        bne @hold
+        jsr PAINT_LEVEL_INTERIOR
+        lda CARD_SPR
+        sta VIC_SPRITE_EN
+        lda #1
+        sta GAME_STATE
+@hold:  rts
+
+INTRO1_TXT:   !scr "  level ", 0
+INTRO2_TXT:   !scr "  target ", 0
+CLEAR_TXT:    !scr "  level complete!  ", 0
+BONUS_TXT:    !scr "  bonus ", 0
+GAMEOVER_TXT: !scr "  game over!  ", 0
+PAUSED_TXT:   !scr "  paused  ", 0
+
+!if * > PAUSE_SAVE { !error "presentation module overflowed into PAUSE_SAVE ($CE00): ", * }
 
 ; ============================================================================
 ; END
