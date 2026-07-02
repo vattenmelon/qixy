@@ -3093,6 +3093,7 @@ PLAYER_DEATH:
         sta GAME_STATE
         lda #60
         sta DEATH_TIMER
+        jsr START_DEATH_BURST
 
         ; Stop music for death sequence
         lda #0
@@ -3115,7 +3116,8 @@ PLAYER_DEATH:
 
 UPDATE_DYING:
         dec DEATH_TIMER
-        bne @flash
+        bne @burst
+        jsr END_DEATH_BURST
 
         ; Death animation done
         dec LIVES
@@ -3160,17 +3162,7 @@ UPDATE_DYING:
         jsr UPDATE_HUD
         rts
 
-@flash:
-        lda DEATH_TIMER
-        and #$04
-        beq @black
-        lda #COL_RED
-        sta VIC_BGCOLOR
-        rts
-@black:
-        lda #COL_BLACK
-        sta VIC_BGCOLOR
-        rts
+@burst: jmp DEATH_BURST_FRAME
 
 CLEAR_TRAIL:
         ; Only clear the current trail buffer, not all trails on screen
@@ -8526,6 +8518,97 @@ ARROW_DEST:
         !byte 64,67,70,73,76,79,82,85
         !byte 128,131,134,137,140,143,146,149
         !byte 192,195,198,201,204,207,210,213
+
+; ============================================================================
+; PLAYER DEATH EXPLOSION (sprite 6)
+; ----------------------------------------------------------------------------
+; On death the player sprite vanishes into a double-size starburst - the same
+; EXPLODE_SLOT frame the trapped second Qix uses - white-strobed over a
+; yellow -> orange -> red fade driven off DEATH_TIMER. Sprite 6 is otherwise
+; unused. Lives in the $3B00 block; the main code segment is full.
+; ============================================================================
+START_DEATH_BURST:
+        ; Centre the 48x42 doubled burst on the player's 8x8 shape, which
+        ; sits in the top-left corner of sprite 0: offset (-20,-17).
+        lda VIC_SPRITE_X0
+        sec
+        sbc #20
+        sta VIC_SPRITE_X0 + 12      ; sprite 6 X
+        lda VIC_SPRITE_MSB
+        and #$01                    ; player's 9th X bit...
+        sbc #0                      ; ...minus the borrow = sprite 6's 9th bit
+        beq @msb_clr
+        lda VIC_SPRITE_MSB
+        ora #$40
+        bne @msb_sta                ; always taken
+@msb_clr:
+        lda VIC_SPRITE_MSB
+        and #$BF
+@msb_sta:
+        sta VIC_SPRITE_MSB
+        lda VIC_SPRITE_Y0
+        sec
+        sbc #17
+        sta VIC_SPRITE_Y0 + 12      ; sprite 6 Y
+        lda #EXPLODE_SLOT
+        sta GAMEPLAY_SCREEN + $3FE  ; sprite 6 pointer
+        lda VIC_SPRITE_MCM
+        and #$BF                    ; hires - multicolor would misread the shape
+        sta VIC_SPRITE_MCM
+        lda VIC_SPRITE_EXPX
+        ora #$40
+        sta VIC_SPRITE_EXPX
+        lda VIC_SPRITE_EXPY
+        ora #$40
+        sta VIC_SPRITE_EXPY
+        lda #COL_WHITE
+        sta VIC_SPRITE_COL + 6
+        lda VIC_SPRITE_EN
+        and #$FE                    ; the player vanishes...
+        ora #$40                    ; ...into the burst
+        sta VIC_SPRITE_EN
+        rts
+
+; Per dying frame: white strobe over a fade that cools as DEATH_TIMER runs
+; out (59..1 -> index 3..0, so the burst dies down from yellow to red).
+DEATH_BURST_FRAME:
+        lda DEATH_TIMER
+        and #$02
+        beq @fade
+        lda #COL_WHITE
+        bne @set                    ; always taken
+@fade:  lda DEATH_TIMER
+        lsr
+        lsr
+        lsr
+        lsr
+        tax
+        lda DEATH_FADE_COLORS, x
+@set:   sta VIC_SPRITE_COL + 6
+        rts
+
+DEATH_FADE_COLORS: !byte COL_RED, COL_RED, COL_ORANGE, COL_YELLOW
+
+; Timer expired: burst off, double-size cleared. The player sprite comes back
+; only on the respawn path - LIVES is still pre-decrement here, so 1 means
+; game over, where the field stays playerless under the GAME OVER screen.
+END_DEATH_BURST:
+        lda VIC_SPRITE_EN
+        and #$BF                    ; burst off
+        ldx LIVES
+        dex
+        beq +
+        ora #$01                    ; respawning: player visible again
++       sta VIC_SPRITE_EN
+        lda VIC_SPRITE_EXPX
+        and #$BF
+        sta VIC_SPRITE_EXPX
+        lda VIC_SPRITE_EXPY
+        and #$BF
+        sta VIC_SPRITE_EXPY
+        rts
+
+!if * > GAMEPLAY_BITMAP { !error "$3B00 block overflowed into GAMEPLAY_BITMAP ($4000): ", * }
 
 ; ============================================================================
 ; MACHINE / VIDEO-STANDARD DETECTION
