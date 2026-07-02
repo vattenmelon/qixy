@@ -6738,7 +6738,7 @@ UPDATE_HUD_BUF:
         inx
         bne @sc
 @sc_done:
-        ; Score digits at col 7
+        ; Score digits at col 7 (coloured by HUD_STYLE_COLORS)
         lda SCORE_HI
         jsr BYTE_TO_DEC
         stx HUD_BUF + 7
@@ -6751,12 +6751,6 @@ UPDATE_HUD_BUF:
         jsr BYTE_TO_DEC
         stx HUD_BUF + 11
         sty HUD_BUF + 12
-        ; Color score cyan ($30)
-        lda #$30
-        ldx #5
-@csc:   sta HUD_COLOR + 7, x
-        dex
-        bpl @csc
 
         ; "LEVEL: " at col 28
         ldx #0
@@ -6766,15 +6760,11 @@ UPDATE_HUD_BUF:
         inx
         bne @lv
 @lv_done:
-        ; Level digits at col 35
+        ; Level digits at col 35 (coloured by HUD_STYLE_COLORS)
         lda LEVEL
         jsr BYTE_TO_DEC
         stx HUD_BUF + 35
         sty HUD_BUF + 36
-        ; Color level yellow ($70)
-        lda #$70
-        sta HUD_COLOR + 35
-        sta HUD_COLOR + 36
 
         ; Row 1: "LIVES: " at col 0 (offset +40)
         ldx #0
@@ -6784,19 +6774,21 @@ UPDATE_HUD_BUF:
         inx
         bne @li
 @li_done:
-        ; Lives count at col 7 (2 digits; leading zero blanked under 10 lives,
-        ; so score-based extra lives can push the count past 9 without glitching)
-        lda LIVES
-        jsr BYTE_TO_DEC             ; X = tens char, Y = ones char
-        cpx #$30
-        bne +
-        ldx #$20                    ; blank a leading zero
-+       stx HUD_BUF + 47
-        sty HUD_BUF + 48
-        ; Color lives green ($50)
-        lda #$50
-        sta HUD_COLOR + 47
-        sta HUD_COLOR + 48
+        ; Lives as diamond icons at col 7 (code $00 = the icon glyph, drawn by
+        ; DRAW_HUD_GLYPH). Max 4 icons; more lives show as 4 icons and a '+'.
+        ldy LIVES
+        cpy #5
+        bcc +
+        lda #$2B                    ; '+'
+        sta HUD_BUF + 51
+        ldy #4
++       lda #$00
+        dey
+        bmi @li_none
+-       sta HUD_BUF + 47, y
+        dey
+        bpl -
+@li_none:
 
         ; "FILL: " at col 22 (offset +40 = 62)
         ldx #0
@@ -6819,10 +6811,6 @@ UPDATE_HUD_BUF:
         sty HUD_BUF + 72
         lda #$25                    ; %
         sta HUD_BUF + 73
-        ; Color fill pct green ($50)
-        lda #$50
-        sta HUD_COLOR + 68
-        sta HUD_COLOR + 69
 
         ; Tint the whole 2-row strip with the panel background colour (low nibble
         ; = bitmap background), turning the HUD into a solid instrument panel with
@@ -6833,14 +6821,14 @@ UPDATE_HUD_BUF:
         sta HUD_COLOR, x
         dex
         bpl @bg
-        rts
+        jmp HUD_STYLE_COLORS        ; digit fields as black LED insets (tail-call)
 
 ; Draw HUD_BUF to bitmap (rows 0-1, cols 0-39)
 DRAW_HUD_BITMAP:
         ldx #0                      ; buffer index / column
         ldy #0                      ; row
 @loop:  lda HUD_BUF, x
-        jsr DRAW_BITMAP_CHAR
+        jsr DRAW_HUD_GLYPH
         lda HUD_COLOR, x
         jsr SET_BITMAP_COLOR
         inx
@@ -6850,7 +6838,7 @@ DRAW_HUD_BITMAP:
         ldx #0
         ldy #1
 @loop2: lda HUD_BUF + 40, x
-        jsr DRAW_BITMAP_CHAR
+        jsr DRAW_HUD_GLYPH
         lda HUD_COLOR + 40, x
         jsr SET_BITMAP_COLOR
         inx
@@ -9033,7 +9021,7 @@ CARD_PRINT:
 DRAW_CARD_GLYPH:
         ldx CARD_COL
         ldy CARD_ROW
-        jsr DRAW_BITMAP_CHAR    ; preserves X/Y
+        jsr DRAW_HUD_GLYPH      ; preserves X/Y; digits use the bold HUD font
         lda CARD_COLOR
         jsr SET_BITMAP_COLOR    ; preserves X/Y
         inc CARD_COL
@@ -9230,6 +9218,117 @@ GAMEOVER_TXT: !scr "  game over!  ", 0
 PAUSED_TXT:   !scr "  paused  ", 0
 
 !if * > PAUSE_SAVE { !error "presentation module overflowed into PAUSE_SAVE ($CE00): ", * }
+
+; ============================================================================
+; HUD STYLING (bold digit font, LED insets, life icons)
+; ----------------------------------------------------------------------------
+; Commercial-HUD pass: numeric read-outs use a chunky double-stroke arcade
+; font on black inset windows (bg nibble 0) recessed into the grey panel,
+; lives are diamond icons instead of a numeral, and the presentation cards
+; share the same bold digits. DRAW_HUD_GLYPH is a drop-in for
+; DRAW_BITMAP_CHAR: digits $30-$39 and the icon sentinel $00 blit from the
+; tables below; everything else falls through to the stock charset.
+; Sits at $CE60, above the pause underlay buffer ($CE00-$CE59).
+; ============================================================================
+* = $CE60
+
+; A = screen code, X = column, Y = row. Preserves X/Y (callers loop on X).
+DRAW_HUD_GLYPH:
+        cmp #$30
+        bcc @chk_icon
+        cmp #$3A
+        bcs @stock
+        sec
+        sbc #$30                ; digit 0-9 -> bold glyph
+        asl
+        asl
+        asl
+        clc
+        adc #<BOLD_DIGITS
+        sta TEMP1
+        lda #0
+        adc #>BOLD_DIGITS
+        sta TEMP2
+        bne @blit               ; always ($CExx)
+@chk_icon:
+        cmp #$00
+        bne @stock
+        lda #<LIFE_ICON
+        sta TEMP1
+        lda #>LIFE_ICON
+        sta TEMP2
+        bne @blit               ; always
+@stock: jmp DRAW_BITMAP_CHAR
+
+@blit:  stx TEMP3
+        sty TEMP4
+        lda BITMAP_ROW_LO, y
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, y
+        sta SCREEN_HI
+        txa
+        asl
+        asl
+        asl
+        bcc +
+        inc SCREEN_HI
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ldy #0
+-       lda (TEMP1), y
+        sta (SCREEN_LO), y
+        iny
+        cpy #8
+        bne -
+        ldx TEMP3
+        ldy TEMP4
+        rts
+
+; Post-panel-tint colour fixup (tail of UPDATE_HUD_BUF): the numeric fields
+; get bg nibble 0 = black LED insets recessed into the grey panel; the life
+; icons stay on the panel in green.
+HUD_STYLE_COLORS:
+        ldx #5
+        lda #$30                ; score: cyan on black
+-       sta HUD_COLOR + 7, x
+        dex
+        bpl -
+        lda #$70                ; level: yellow on black
+        sta HUD_COLOR + 35
+        sta HUD_COLOR + 36
+        ldx #5
+        lda #$50                ; fill "XX/YY%": green on black
+-       sta HUD_COLOR + 68, x
+        dex
+        bpl -
+        ldx #4
+        lda #$50 | HUD_BG       ; life icons (and overflow '+') on the panel
+-       sta HUD_COLOR + 47, x
+        dex
+        bpl -
+        rts
+
+; Chunky double-stroke arcade digits (hires, 1 = ink).
+BOLD_DIGITS:
+        !byte $7C,$FE,$C6,$C6,$C6,$C6,$FE,$7C   ; 0
+        !byte $18,$38,$78,$18,$18,$18,$7E,$7E   ; 1
+        !byte $7C,$FE,$06,$3C,$78,$E0,$FE,$FE   ; 2
+        !byte $7C,$FE,$06,$3C,$06,$06,$FE,$7C   ; 3
+        !byte $1C,$3C,$6C,$CC,$FE,$FE,$0C,$0C   ; 4
+        !byte $FE,$FE,$C0,$FC,$06,$06,$FE,$7C   ; 5
+        !byte $7C,$FE,$C0,$FC,$C6,$C6,$FE,$7C   ; 6
+        !byte $FE,$FE,$06,$0C,$18,$30,$30,$30   ; 7
+        !byte $7C,$FE,$C6,$7C,$C6,$C6,$FE,$7C   ; 8
+        !byte $7C,$FE,$C6,$C6,$7E,$06,$FE,$7C   ; 9
+
+; One life = one diamond, matching the player's cutter shape.
+LIFE_ICON:
+        !byte $10,$38,$7C,$FE,$7C,$38,$10,$00
+
+!if * > $D000 { !error "HUD styling module overflowed into I/O ($D000): ", * }
 
 ; ============================================================================
 ; END
