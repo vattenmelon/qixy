@@ -2760,22 +2760,14 @@ MOVE_SPARX:
         bcc @ts_fail
         cpy #FIELD_BOTTOM + 1
         bcs @ts_fail
-        ; Check tile - only trail and claimed-on-boundary
+        ; Check tile - only settled trail and claimed-on-boundary
         jsr GET_TILE
-        cmp #CHAR_TRAIL_H
-        beq @ts_ok
-        cmp #CHAR_TRAIL_V
-        beq @ts_ok
-        cmp #CHAR_CORNER_LB
-        beq @ts_ok
-        cmp #CHAR_CORNER_RB
-        beq @ts_ok
-        cmp #CHAR_CORNER_LT
-        beq @ts_ok
-        cmp #CHAR_CORNER_RT
-        beq @ts_ok
         cmp #CHAR_CLAIMED
-        bne @ts_fail
+        beq @ts_claim
+        jsr SPARX_TRAIL_OK  ; C=1: trail char, and not the line being drawn
+        bcs @ts_ok
+        bcc @ts_fail        ; always (not a trail char, or the live trail)
+@ts_claim:
         ; Save candidate position before boundary check (GET_TILE corrupts TEMP1)
         lda TEMP1
         pha
@@ -2818,25 +2810,17 @@ MOVE_SPARX:
         cpy #FIELD_BOTTOM + 1
         bcs @td_fail
 
-        ; Check tile type
+        ; Check tile type: border, settled trail, or claimed-on-boundary
         jsr GET_TILE
         cmp #CHAR_BORDER
         beq @td_ok
-        cmp #CHAR_TRAIL_H
-        beq @td_ok
-        cmp #CHAR_TRAIL_V
-        beq @td_ok
-        cmp #CHAR_CORNER_LB
-        beq @td_ok
-        cmp #CHAR_CORNER_RB
-        beq @td_ok
-        cmp #CHAR_CORNER_LT
-        beq @td_ok
-        cmp #CHAR_CORNER_RT
-        beq @td_ok
-        ; CHAR_CLAIMED only valid if adjacent to CHAR_EMPTY
         cmp #CHAR_CLAIMED
-        bne @td_fail
+        beq @td_claim
+        jsr SPARX_TRAIL_OK  ; C=1: trail char, and not the line being drawn
+        bcs @td_ok
+        bcc @td_fail        ; always (not a trail char, or the live trail)
+@td_claim:
+        ; CHAR_CLAIMED only valid if adjacent to CHAR_EMPTY
         ; Save candidate position before boundary check (GET_TILE corrupts TEMP1)
         lda TEMP1
         pha
@@ -5368,6 +5352,40 @@ ATTRACT_TICK:
         lda #6
 @flip:  sta GAME_STATE
 @stay:  clc
+        rts
+
+; ----------------------------------------------------------------------------
+; SPARX_TRAIL_OK - may the sparx step onto this trail tile?
+; ----------------------------------------------------------------------------
+; The trail/corner chars (131-136, contiguous) mark BOTH settled lines from
+; completed claims (sparx patrol those - core behaviour) and the line the
+; player is drawing RIGHT NOW. Sparx must not chase down a live, unclaimed
+; line (the fuse is the anti-stall threat, not the sparx); the live trail is
+; exactly the tiles in TRAIL_BUFFER while PLAYER_DRAWING is set, so scan it.
+; Input:  A = tile char (from GET_TILE), TEMP1/TEMP2 = candidate tile x/y
+; Output: C=1 walkable (a settled trail/corner char), C=0 not walkable
+;         (not a trail char at all, or part of the live trail)
+; Clobbers A, Y. Called from MOVE_SPARX, which also saves ~32 bytes in the
+; packed main block by replacing its two 6-way cmp/beq chains with this.
+SPARX_TRAIL_OK:
+        cmp #CHAR_TRAIL_H
+        bcc @no                 ; below 131: not a trail char
+        cmp #CHAR_CORNER_RT + 1
+        bcs @no                 ; above 136: not a trail char
+        lda PLAYER_DRAWING
+        beq @yes                ; no draw in progress: every trail is settled
+        ldy TRAIL_COUNT         ; scan the live trail for the candidate tile
+@scan:  dey
+        bmi @yes                ; not in the live trail (count <= 128, safe)
+        lda TRAIL_BUFFER_X, y
+        cmp TEMP1
+        bne @scan
+        lda TRAIL_BUFFER_Y, y
+        cmp TEMP2
+        bne @scan
+@no:    clc                     ; live trail tile -> blocked
+        rts
+@yes:   sec
         rts
 
 CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
