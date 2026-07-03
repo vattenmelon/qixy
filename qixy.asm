@@ -2019,7 +2019,8 @@ FINISH_FILL:
         bcc @not_done
 
         ; Level complete! Award a completion bonus (scales with level and how
-        ; far past the target you finished) before switching state.
+        ; far past the target you finished) plus a time bonus (10 pts/second
+        ; left on the clock - falls through inside) before switching state.
         jsr ADD_LEVEL_BONUS
         lda #3
         sta GAME_STATE
@@ -8423,31 +8424,10 @@ ADD_CLAIM_SCORE:
         rts
 
 ; ----------------------------------------------------------------------------
-; ADD_LEVEL_BONUS: award a level-completion bonus = (LEVEL + overshoot) * 100
-; points, where overshoot = PERCENT_CLAIMED - TARGET_PERCENT (how far past the
-; clear target you finished, >= 0 here). Rewards both reaching higher levels and
-; saving a big final claim. Called once per real level clear (the cheat-skip
-; path bypasses the fill, so it gets no bonus). Read before LEVEL/TARGET change.
-ADD_LEVEL_BONUS:
-        lda PERCENT_CLAIMED
-        sec
-        sbc TARGET_PERCENT      ; A = overshoot %
-        clc
-        adc LEVEL               ; A = LEVEL + overshoot = bonus in hundreds (>=1)
-        tax
-        stx BONUS_HUNDREDS      ; shown by DRAW_CLEAR_CARD on the banner
-@loop:
-        inc SCORE_MID           ; add 100 points (one "hundred")
-        lda SCORE_MID
-        cmp #100
-        bcc @next
-        lda #0
-        sta SCORE_MID
-        inc SCORE_HI
-@next:
-        dex
-        bne @loop
-        rts
+; ADD_LEVEL_BONUS moved to the $CE00 bonus window (it grew a time-bonus tail
+; and no longer fit this block). Its old bytes here now hold the card string
+; for DRAW_TIME_LINE, which the byte-exact $CE00 window has no room for.
+TIMEB_TXT: !scr "  time bonus ", 0
 
 ; ----------------------------------------------------------------------------
 ; THE FUSE
@@ -8828,7 +8808,8 @@ RESTORE_TRAIL_CELL:
         jmp CLEAR_BITMAP_CELL   ; tail-call, preserves X/Y
 @ghost: jmp BANKED_BG           ; C=1 -> REVEAL_K on SAVE_X/SAVE_Y
 
-!if * > GAMEPLAY_BITMAP { !error "$3B00 block overflowed into GAMEPLAY_BITMAP ($4000): ", * }
+SEG3B00_END:
+!if SEG3B00_END > GAMEPLAY_BITMAP { !error "$3B00 block overflowed into GAMEPLAY_BITMAP ($4000): ", SEG3B00_END }
 
 ; ============================================================================
 ; MACHINE / VIDEO-STANDARD DETECTION
@@ -9332,12 +9313,15 @@ SEGC320_END:
 INTRO_FRAMES = 90               ; level-intro card duration (~1.5 s PAL)
 
 ; Pause card underlay buffer: 10 cells x 8 bitmap bytes + 10 colour bytes.
-; Runtime scratch above this module's code - never part of the .prg.
+; Runtime scratch in the cassette buffer ($033C-$03FB) - the game never does
+; tape I/O, and validity is guarded by PAUSE_DRAWN (see ERASE_PAUSE_CARD), so
+; nothing else may scribble here only WHILE a pause card is up. Its old home
+; ($CE00-$CE5F) is now the level/time-bonus code window.
 PAUSE_WIDTH   = 10
 PAUSE_BMP     = GAMEPLAY_BITMAP + 12*320 + 15*8     ; row 12, cols 15-24
 PAUSE_COL_RAM = GAMEPLAY_SCREEN + 12*40 + 15
-PAUSE_SAVE     = $CE00
-PAUSE_SAVE_COL = $CE50
+PAUSE_SAVE     = $033C
+PAUSE_SAVE_COL = $038C
 
 ; --- text plumbing ----------------------------------------------------------
 
@@ -9424,9 +9408,10 @@ DRAW_INTRO_CARD:
         jsr DRAW_CARD_GLYPH
         jmp CARD_PAD2
 
-; "LEVEL COMPLETE!" (+ "BONUS 0800" on a real clear) over the frozen field
-; while the border pulses and the fanfare plays. Erased by the next level's
-; BEGIN_LEVEL bitmap clear. The cheat skip awards no bonus (BONUS_HUNDREDS=0).
+; "LEVEL COMPLETE!" (+ "BONUS 0800" and "TIME BONUS 350" on a real clear) over
+; the frozen field while the border pulses and the fanfare plays. Erased by the
+; next level's BEGIN_LEVEL bitmap clear. The cheat skip awards no bonus
+; (BONUS_HUNDREDS=0), which also skips the time-bonus line.
 DRAW_CLEAR_CARD:
         lda #$70                ; yellow on black
         sta CARD_COLOR
@@ -9450,7 +9435,7 @@ DRAW_CLEAR_CARD:
         jsr DRAW_CARD_GLYPH
         lda #$30
         jsr DRAW_CARD_GLYPH
-        jmp CARD_PAD2
+        jmp DRAW_TIME_LINE      ; pad this line, then "TIME BONUS NN0" below
 @done:  rts
 
 ; "GAME OVER!" in red - drawn into the bitmap, so actually visible (the old
@@ -9574,7 +9559,87 @@ HALO_ROWS:
         !byte $30,$0C, $18,$18, $0C,$30, $06,$60
         !byte $03,$C0, $01,$80, $00,$00, $00,$00
 
-!if * > PAUSE_SAVE { !error "presentation module overflowed into PAUSE_SAVE ($CE00): ", * }
+!if * > $CE00 { !error "presentation module overflowed into the bonus window ($CE00): ", * }
+
+; ============================================================================
+; LEVEL-COMPLETE BONUSES ($CE00 window, 96 bytes)
+; ----------------------------------------------------------------------------
+; Code window between the presentation module ($CC00) and the HUD styling
+; module ($CE60), reclaimed from the pause underlay buffer (that scratch now
+; lives in the cassette buffer at $033C - it was never part of the .prg, so
+; this trade turns 96 bytes of reserved RAM into loadable code space).
+; ============================================================================
+* = $CE00
+
+TIME_BONUS: !byte 0             ; seconds left at level clear (score = x10)
+
+; ADD_LEVEL_BONUS: award a level-completion bonus = (LEVEL + overshoot) * 100
+; points, where overshoot = PERCENT_CLAIMED - TARGET_PERCENT (how far past the
+; clear target you finished, >= 0 here). Rewards both reaching higher levels
+; and saving a big final claim. Called once per real level clear (the cheat-
+; skip path bypasses the fill, so it gets no bonus). Read before LEVEL/TARGET
+; change. Falls through into the time bonus.
+ADD_LEVEL_BONUS:
+        lda PERCENT_CLAIMED
+        sec
+        sbc TARGET_PERCENT      ; A = overshoot %
+        clc
+        adc LEVEL               ; A = LEVEL + overshoot = bonus in hundreds (>=1)
+        tax
+        stx BONUS_HUNDREDS      ; shown by DRAW_CLEAR_CARD on the banner
+@loop:
+        inc SCORE_MID           ; add 100 points (one "hundred")
+        lda SCORE_MID
+        cmp #100
+        bcc @next
+        lda #0
+        sta SCORE_MID
+        inc SCORE_HI
+@next:
+        dex
+        bne @loop
+        ; fall through - the time bonus rides on every real clear
+
+; ADD_TIME_BONUS: 10 points per second left on the level timer, so a fast
+; clear pays. Adds via ADD_CLAIM_SCORE with a borrowed step of 10 (harmless:
+; SET_CLAIM_STEP re-latches the step at the start of every claim). TIME_LEFT
+; doubles as the loop counter - RESET_TIMER_HUD reloads it at the next level
+; before anything reads it again.
+ADD_TIME_BONUS:
+        lda TIME_LEFT
+        sta TIME_BONUS          ; latched for DRAW_TIME_LINE on the banner
+        beq @done
+        lda #10
+        sta CLAIM_SCORE_STEP
+@lp:    jsr ADD_CLAIM_SCORE
+        dec TIME_LEFT
+        bne @lp
+@done:  rts
+
+; Tail of DRAW_CLEAR_CARD's bonus branch (its closing jmp CARD_PAD2 was
+; retargeted here - the $CC00 module is full): pad the BONUS line, then draw
+; "TIME BONUS NN0" beneath it. A stale TIME_BONUS is unreachable: the only
+; path that skips ADD_TIME_BONUS is the cheat skip, whose BONUS_HUNDREDS=0
+; bails out of DRAW_CLEAR_CARD before this line.
+DRAW_TIME_LINE:
+        jsr CARD_PAD2           ; trailing pad of the BONUS line above
+        lda TIME_BONUS
+        beq @done
+        lda #15
+        sta CARD_ROW
+        ldx #11
+        lda #<TIMEB_TXT
+        ldy #>TIMEB_TXT
+        jsr CARD_PRINT          ; "  TIME BONUS "
+        lda TIME_BONUS
+        jsr DRAW_NUM
+        lda #$30                ; append "0" - the bonus is 10 points/second
+        jsr DRAW_CARD_GLYPH
+        jmp CARD_PAD2
+@done:  rts
+
+SEGCE00_END:
+!if SEGCE00_END > $CE60 { !error "$CE00 bonus window overflowed into the HUD styling module ($CE60): ", SEGCE00_END }
 
 ; ============================================================================
 ; HUD STYLING (bold digit font, LED insets, life icons)
@@ -9810,7 +9875,8 @@ INSTALL_HALO_SPRITES:
         sta VIC_SPRITE_MCM
         rts
 
-!if * > $D000 { !error "HUD styling module overflowed into I/O ($D000): ", * }
+SEGCE60_END:
+!if SEGCE60_END > $D000 { !error "HUD styling module overflowed into I/O ($D000): ", SEGCE60_END }
 
 ; ============================================================================
 ; BACKGROUND REVEAL (levels 2+) - module under the BASIC ROM
