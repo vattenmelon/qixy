@@ -4698,25 +4698,26 @@ INIT_MUSIC:
         lda #1
         sta MUSIC_ENABLED
 
-        ; Voice 1: Pumping synth-pop bass - sawtooth. The engine chops the
-        ; gate on every odd 16th, so give it a short release tail that
-        ; breathes into the gap instead of cutting dead.
-        lda #$00
+        ; Voice 1: Pumping synth-pop bass - round ~40% pulse (the original's
+        ; rubbery analogue bass, not a buzzy saw). The engine chops the gate
+        ; on every odd 16th, so give it a short release tail that breathes
+        ; into the gap instead of cutting dead.
+        lda #$80
         sta SID_PW_LO1
         lda #$06
-        sta SID_PW_HI1
+        sta SID_PW_HI1      ; PW $0680 ~ 41% - dark and round
         lda #$08            ; Attack=0, Decay=8 - punchy front
         sta SID_AD1
         lda #$B5            ; Sustain=B, Release=5 - full body, pumping tail
         sta SID_SR1
 
-        ; Voice 2: Chorus lead - fat 50% pulse, singing pluck (not the old
-        ; palm-muted chug: this melody has to carry the vocal line)
+        ; Voice 2: Chorus "vocal" lead - fat 50% pulse with a breathed-in
+        ; attack so held notes read as sung, not plucked
         lda #$00
         sta SID_PW_LO2
         lda #$08            ; ~50% pulse - warm, thick square
         sta SID_PW_HI2
-        lda #$06            ; Attack=0, Decay=6 - soft-edged synth pluck
+        lda #$16            ; Attack=1, Decay=6 - soft vocal onset
         sta SID_AD2
         lda #$95            ; Sustain=9, Release=5 - notes sing across rests
         sta SID_SR2
@@ -4765,12 +4766,17 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo: one 16th-note step every 6 frames (PAL) = 125 BPM.
-        ; 64 steps = 4 bars of 4/4, one chord per bar.
+        ; Tempo: 16th steps alternate 6 and 7 frames (PAL) so each 8th-note
+        ; pair is exactly 13 frames = 260 ms -> 115.4 BPM, right at the
+        ; original's ~117. The 8th grid stays machine-straight; only the
+        ; inaudible internal chop point shifts. 64 steps = 4 bars of 4/4.
         inc MUSIC_TIMER
-        lda MUSIC_TIMER
-        cmp #6
-        bcs @step
+        lda MUSIC_POS
+        lsr                 ; carry = parity of the step about to play
+        lda #0
+        adc #6              ; 6 or 7 frames for this 16th
+        cmp MUSIC_TIMER
+        beq @step
         rts
 @step:
         lda #0
@@ -4796,12 +4802,12 @@ UPDATE_MUSIC:
         sta SID_FREQ_LO1
         lda NOTE_FREQ_HI, y
         sta SID_FREQ_HI1
-        lda #$21            ; Gate on, sawtooth for punchy bass
+        lda #$41            ; Gate on, pulse - the round, rubbery synth bass
         sta SID_CTRL1
         jmp @do_drum
 
 @bass_off:
-        lda #$20            ; Gate off
+        lda #$40            ; Gate off
         sta SID_CTRL1
 
 @do_drum:
@@ -4826,7 +4832,7 @@ UPDATE_MUSIC:
 
 @offbeat:
         ; Odd 16th: chop bass & drum gates (the pump + drum retrigger)
-        lda #$20
+        lda #$40
         sta SID_CTRL1
         lda #$80
         sta SID_CTRL3
@@ -4834,6 +4840,8 @@ UPDATE_MUSIC:
 @do_lead:
         ; === LEAD MELODY (Voice 2, full 16th grid) ===
         ldx MUSIC_POS
+        lda ARP_POS         ; loop counter: 0 = first pass after INIT_MUSIC,
+        beq @lead_off       ; bass+drums only - the song opens on the groove
         lda LEAD_PATTERN, x
         cmp #$FF
         beq @lead_off
@@ -4859,6 +4867,9 @@ UPDATE_MUSIC:
         bcc @done
         lda #0
         sta MUSIC_POS
+        lda ARP_POS         ; completed a loop: let the vocal in (cap at 1
+        bne @done           ; so it never wraps back to the intro state)
+        inc ARP_POS
 
 @done:
         rts
@@ -5441,56 +5452,55 @@ NOTE_FREQ_HI:
 ; "Claiming On My Own" - Robyn "Dancing On My Own"-inspired synth-pop.
 ; 4 bars, one chord per bar: the heartbreak-banger loop vi-IV-I-V in E major
 ;     | C#m | A | E | B |
-; 125 BPM (6 frames per 16th). Bass & drums are 8th-grid patterns (32 entries,
-; indexed MUSIC_POS/2); the lead is the full 16th grid (64 entries) so it can
-; anticipate beats. UPDATE_MUSIC chops voices 1+3 on odd 16ths - every bass
-; 8th pumps and every drum hit retriggers without needing $FF slots here.
+; 115.4 BPM (16ths alternate 6/7 frames; 8ths are a straight 13). The first
+; loop after INIT_MUSIC is bass+drums only - the song opens on the groove -
+; then the "vocal" enters. Bass & drums are 8th-grid patterns (32 entries,
+; indexed MUSIC_POS/2); the lead is the full 16th grid (64 entries).
+; UPDATE_MUSIC chops voices 1+3 on odd 16ths - every bass 8th pumps and
+; every drum hit retriggers without needing $FF slots here.
 ; ----------------------------------------------------------------------------
 
-; Bass - straight pumping 8ths on the chord root, octave pop on the "and" of
-; beats 2 and 4 (the classic italo lift). Walks the loop C#2/A1/E2/B1.
-; Refs: 9=C#2, 21=C#3, 5=A1, 17=A2, 12=E2, 24=E3, 7=B1, 19=B2
+; Bass - dead-flat straight 8ths on the chord root, changing exactly at the
+; bar line. No octave pops, no fills: the original's pump is famously
+; deadpan, and the flatness IS the hook. Walks the loop C#2/A1/E2/B1.
+; Refs: 9=C#2, 5=A1, 12=E2, 7=B1
 BASS_PATTERN:
-        ; Bar 1 (C#m): the pulse that never stops
-        !byte 9, 9, 9, 21, 9, 9, 9, 21           ; C# x3 pop / C# x3 pop
-        ; Bar 2 (A): drop to the IV, keep pumping
-        !byte 5, 5, 5, 17, 5, 5, 5, 17           ; A  x3 pop / A  x3 pop
-        ; Bar 3 (E): home chord under the melodic lift
-        !byte 12, 12, 12, 24, 12, 12, 12, 24     ; E  x3 pop / E  x3 pop
-        ; Bar 4 (B): the V - extra octave pops push back to the top
-        !byte 7, 7, 7, 19, 7, 19, 7, 19          ; B  x3 pop / B pop B pop
+        !byte 9, 9, 9, 9, 9, 9, 9, 9             ; Bar 1 (C#m)
+        !byte 5, 5, 5, 5, 5, 5, 5, 5             ; Bar 2 (A)
+        !byte 12, 12, 12, 12, 12, 12, 12, 12     ; Bar 3 (E)
+        !byte 7, 7, 7, 7, 7, 7, 7, 7             ; Bar 4 (B)
 
-; Lead - the chorus, paraphrased for one pulse voice (16th grid, $FF = rest):
-; bar 1 hammers the 5th like "I'm in the corner", bar 2 answers a third down,
-; bar 3 is the lift ("I'm right over here") climbing to a syncopated B4 peak
-; on the offbeat, bar 4 is the falling "oh oh oh" quarters - E over B (sus4
-; ache) resolving to D#, then a pickup back to the top of the loop.
-; Refs: 31=B3, 33=C#4, 35=D#4, 36=E4, 38=F#4, 40=G#4, 41=A4, 43=B4
+; Lead - the chorus vocal, transcribed for one pulse voice (16th grid).
+; $FF = gate off; a repeated value HOLDS the note (gate stays up, no
+; re-attack), so syllables are note+$FF pairs and long notes are runs.
+;   Bar 1: "I'm in the cor-ner"    - hammered G#s falling to a held E
+;   Bar 2: "watch-ing you kiss her"- hammered F#s falling E -> held C#
+;   Bar 3: "oh... oh... oh..."     - the held B4 peak stepping down G#, F#
+;   Bar 4: "I keep dan-cing on my own" - the title line settling on low B
+; Refs: 31=B3, 33=C#4, 35=D#4, 36=E4, 38=F#4, 40=G#4, 43=B4
 LEAD_PATTERN:
-        ; Bar 1 (C#m): G# G# G# E, F# pushed a 16th early, land on E
-        !byte 40, $FF, 40, $FF, 40, $FF, 36, 38
-        !byte $FF, $FF, $FF, $FF, 36, $FF, $FF, $FF
-        ; Bar 2 (A): same shape sequenced down - F# F# F# C#, E push, C#
-        !byte 38, $FF, 38, $FF, 38, $FF, 33, 36
-        !byte $FF, $FF, $FF, $FF, 33, $FF, $FF, $FF
-        ; Bar 3 (E): the lift - E E G# G# A, peak B4 on the offbeat, fall
-        !byte 36, $FF, 36, $FF, 40, $FF, 40, $FF
-        !byte 41, $FF, 43, $FF, 40, $FF, 36, $FF
-        ; Bar 4 (B): "oh oh oh" - F# E D# quarters, low B, D# pickup
-        !byte 38, $FF, $FF, $FF, 36, $FF, $FF, $FF
-        !byte 35, $FF, $FF, $FF, 31, $FF, 35, $FF
+        ; Bar 1 (C#m): I'm(G#) in(G#) the(G#) cor(G#) -ner(E held)
+        !byte 40, $FF, 40, $FF, 40, $FF, 40, $FF
+        !byte 36, 36, 36, $FF, $FF, $FF, $FF, $FF
+        ; Bar 2 (A): watch(F#) -ing(F#) you(F#) kiss(E) her(C# held)
+        !byte 38, $FF, 38, $FF, 38, $FF, 36, $FF
+        !byte 33, 33, 33, $FF, $FF, $FF, $FF, $FF
+        ; Bar 3 (E): oh(B4, half note) oh(G#) oh(F#) - the ache
+        !byte 43, 43, 43, 43, 43, 43, $FF, $FF
+        !byte 40, 40, 40, $FF, 38, 38, 38, $FF
+        ; Bar 4 (B): I(D#) keep(D#) dan(E) -cing(D#) on(C#) my(C#) own(B held)
+        !byte 35, $FF, 35, $FF, 36, $FF, 35, $FF
+        !byte 33, $FF, 33, $FF, 31, 31, 31, $FF
 
 ; Drums - voice 3 NOISE on the 8th grid, pitch index shapes the hit:
-; Kick=0 (deep boom) on 1 & 3, Clap=17 (fat thump) on 2 & 4, offbeat
-; Hat=30 (bright tss) on every "and" - the four-on-the-floor feel with the
-; dance-floor offbeat hat. Bar 4 ends in a rising noise fill into the loop.
+; Kick=0 (deep boom) on 1 & 3, Clap=20 (bright crack) on 2 & 4, offbeat
+; Hat=30 (tss) on every "and". Identical every bar, no fills - the record's
+; beat is a machine and never blinks; the pumping bass supplies the floor.
 PAD_PATTERN:
-        ; Bars 1-3: KICK hat CLAP hat KICK hat CLAP hat
-        !byte 0, 30, 17, 30, 0, 30, 17, 30
-        !byte 0, 30, 17, 30, 0, 30, 17, 30
-        !byte 0, 30, 17, 30, 0, 30, 17, 30
-        ; Bar 4: groove, then the fill climbs (clap-tom-tom rise)
-        !byte 0, 30, 17, 30, 0, 30, 22, 24       ; ... KICK hat fill-up
+        !byte 0, 30, 20, 30, 0, 30, 20, 30       ; KICK hat CLAP hat x2
+        !byte 0, 30, 20, 30, 0, 30, 20, 30
+        !byte 0, 30, 20, 30, 0, 30, 20, 30
+        !byte 0, 30, 20, 30, 0, 30, 20, 30
 
 ; ============================================================================
 ; SAD MUSIC PATTERNS - Game Over
