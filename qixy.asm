@@ -449,6 +449,7 @@ MAIN_LOOP:
         jsr UPDATE_PLAYER
         jsr UPDATE_FUSE         ; trail-burning fuse if you stall mid-draw
         jsr UPDATE_TRAIL_SPARK  ; bright spark at the drawing head
+        jsr UPDATE_TRAIL_SHIMMER ; white pulse marching along the trail
         jsr UPDATE_QIX
         jsr UPDATE_QIX2
         jsr UPDATE_SPARX
@@ -988,6 +989,12 @@ SHOW_TITLE:
         sta VIC_BGCOLOR
         lda #COL_BLACK
         sta VIC_BORDER
+
+        ; Arm attract mode: reset idle timer, swallow any held-over fire
+        lda #0
+        sta ATTRACT_TIMER
+        lda #1
+        sta ATTRACT_PREV_FIRE
         rts
 
 UPDATE_TITLE:
@@ -995,12 +1002,9 @@ UPDATE_TITLE:
         lda #COL_BLACK
         sta VIC_BORDER
 
-        ; Check fire button
-        lda CIA1_PORTA
-        and #$10
-        bne @no
-
-        ; Start game
+        ; Fire (fresh press) starts a game; ~10s idle flips to the high scores
+        jsr ATTRACT_TICK
+        bcc @no
         jsr START_NEW_GAME
 @no:    rts
 
@@ -4303,6 +4307,11 @@ SHOW_HISCORE_TABLE:
         lda #$16
         sta VIC_MEMPTR
 
+        ; Arm attract mode: reset idle timer, swallow any held-over fire
+        lda #0
+        sta ATTRACT_TIMER
+        lda #1
+        sta ATTRACT_PREV_FIRE
         rts
 
 ; Helper: draw byte (0-99) as 2 decimal digits (Y = screen offset, preserves X)
@@ -4359,15 +4368,11 @@ UPDATE_HISCORE_SHOW:
         lda #$FF                ; Restore CIA for joystick
         sta CIA1_PORTA
 
-        ; Check fire button
-        lda CIA1_PORTA
-        and #$10
-        bne @done
-
-        ; Return to title
-        jsr SHOW_TITLE
-        lda #0
-        sta GAME_STATE
+        ; Fire (fresh press) starts a new game - arcade convention; ~10s idle
+        ; flips back to the title (ATTRACT_TICK handles both).
+        jsr ATTRACT_TICK
+        bcc @done
+        jsr START_NEW_GAME
 @done:  rts
 
 ; Save high scores to disk
@@ -5297,6 +5302,44 @@ SFX_QIX2_EXPLODE:
 ; ============================================================================
 ; Skip over CHARSET_RAM ($2000-$27FF) and SPRITE_RAM ($2800-$2BFF)
 ; to avoid overlapping with reserved VIC memory areas
+; ----------------------------------------------------------------------------
+; ATTRACT MODE TICK (shared by UPDATE_TITLE and UPDATE_HISCORE_SHOW)
+; ----------------------------------------------------------------------------
+; Fire handling + idle auto-cycle for the front-end screens. Returns C=1 when
+; a FRESH fire press should start a new game (edge-detected via
+; ATTRACT_PREV_FIRE, armed to 1 on each screen entry so a press held over
+; from gameplay or the previous screen is swallowed). While fire stays
+; released, ATTRACT_TIMER counts every 2nd frame; when it wraps (~10s PAL)
+; the title and the high-score table flip into each other, arcade-cabinet
+; style (the SHOW_ routines re-arm the timer).
+ATTRACT_TICK:
+        lda CIA1_PORTA
+        and #$10
+        bne @released
+        lda ATTRACT_PREV_FIRE   ; fire is down - fresh press?
+        bne @stay               ; held over -> ignore
+        inc ATTRACT_PREV_FIRE
+        sec                     ; fresh press -> caller starts a game
+        rts
+@released:
+        lsr ATTRACT_PREV_FIRE   ; 1 -> 0 (and 0 stays 0)
+        lda FRAME_COUNT
+        lsr
+        bcs @stay               ; count idle time on even frames only
+        inc ATTRACT_TIMER
+        bne @stay
+        lda GAME_STATE          ; idle spell over: flip 0 <-> 6
+        beq @to_hiscores
+        jsr SHOW_TITLE
+        lda #0
+        beq @flip               ; always taken
+@to_hiscores:
+        jsr SHOW_HISCORE_TABLE
+        lda #6
+@flip:  sta GAME_STATE
+@stay:  clc
+        rts
+
 CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
 ; Guard: this relocated block MUST end below SPRITE_RAM ($2800) - INIT_SPRITES
 ; fills $2800-$2BFF at runtime and would clobber any code that spilled past it
@@ -5856,6 +5899,11 @@ CARD_TMP        = $C6F6  ; digit scratch for DRAW_NUM
 CARD_SPR        = $C6F7  ; $D015 saved across the level-intro card
 BONUS_HUNDREDS  = $C6F8  ; level bonus in hundreds, shown by DRAW_CLEAR_CARD
 PAUSE_DRAWN     = $C6F9  ; 1 = pause card on screen and PAUSE_SAVE is valid
+; Trail shimmer: a white pulse marching tail->head along the drawn trail
+SHIMMER_IDX     = $C6FB  ; trail-buffer index currently lit ($FF = none)
+; Attract mode: title <-> high-score table auto-cycle when idle
+ATTRACT_TIMER   = $C6FD  ; idle counter (inc every 2nd frame; wrap = flip screen)
+ATTRACT_PREV_FIRE = $C6FE ; fire edge detect (armed on screen entry)
 
 FUSE_STALL_DELAY  = 30   ; frames stopped mid-draw before the fuse ignites
 FUSE_ADVANCE_RATE = 6    ; frames the spark spends on each trail tile
@@ -6444,7 +6492,6 @@ COPY_SPRITES_TO_BANK1:
         bne @copy
         lda #%10001111
         sta VIC_SPRITE_EN       ; base 4 sprites + the player's glow halo (7)
-        jsr INSTALL_HALO_SPRITES
 
         ; Install the explosion burst frame into slot 156 ($6700)
         ldx #0
@@ -6464,8 +6511,10 @@ COPY_SPRITES_TO_BANK1:
 
         ; Install the 4 directional player arrows into bank-1 slots 148-151
         ; ($6500-$65FF = GAMEPLAY_SPRITES + 256). Clear the region, then scatter
-        ; each arrow's 8 shape bytes to rows 0-7 (byte 0) via the ARROW_DEST
-        ; offsets. UPDATE_SPRITES points sprite 0 at the arrow for PLAYER_DIR.
+        ; each arrow's 8 shape bytes to sprite rows 0-7 (byte column 0): dest
+        ; offset = (arrow = x/8)*64 + (row = x&7)*3, computed inline (the old
+        ; ARROW_DEST lookup table was reclaimed from the packed $3B00 block).
+        ; UPDATE_SPRITES points sprite 0 at the arrow for PLAYER_DIR.
         ldx #0
         txa
 @cparr: sta GAMEPLAY_SPRITES + 256, x
@@ -6473,7 +6522,19 @@ COPY_SPRITES_TO_BANK1:
         bne @cparr
         ldx #0
 @cparr2:
-        ldy ARROW_DEST, x
+        txa
+        and #$07
+        sta TEMP1
+        asl
+        adc TEMP1               ; row*3 (carry stays clear: row*2 <= 14)
+        sta TEMP1
+        txa
+        and #$18                ; arrow*8
+        asl
+        asl
+        asl                     ; arrow*64 (never carries: max $18 -> $C0)
+        adc TEMP1               ; + row*3
+        tay
         lda PLAYER_ARROWS, x
         sta GAMEPLAY_SPRITES + 256, y
         inx
@@ -6489,7 +6550,7 @@ COPY_SPRITES_TO_BANK1:
         sta VIC_SPRITE_MC0
         lda #COL_WHITE
         sta VIC_SPRITE_MC1
-        rts
+        jmp INSTALL_HALO_SPRITES ; player glow ring -> slots 152-153 (tail-call)
 
 ; Bitmap row address lookup table (25 rows)
 ; Each row = base + row * 320
@@ -7465,6 +7526,12 @@ QIX2_EXPLODE_SPRITE:
         !byte $00,$00,$00
         !byte $00          ; pad to 64 bytes
 
+; Guard: the $2C00 code/data above must stay below QIX_FRAMES ($3880) - the
+; overlap is silent otherwise (ACME only emits the benign "segment starts
+; inside another" warning it already gives for the title-data include).
+SEG2C00_END:
+!if SEG2C00_END > $3880 { !error "$2C00 segment overflowed into QIX_FRAMES ($3880): ", SEG2C00_END }
+
 ; ============================================================================
 ; TITLE SCREEN BITMAP DATA
 ; ============================================================================
@@ -8269,8 +8336,9 @@ ADD_LEVEL_BONUS:
 ; head, you die. Laying any new trail tile snuffs it. So once you commit to a
 ; draw you must keep moving - dawdling in open space is lethal. FUSE_STALL_DELAY
 ; frames of no progress arm it; the spark then advances every FUSE_ADVANCE_RATE
-; frames. It's a recoloured trail cell (white spark $10 over the pink trail
-; $A0) via SET_BITMAP_COLOR; the cell reverts to $A0 as the spark moves on.
+; frames. It's a recoloured trail cell (red $20 / orange $80 fire flicker over
+; the pink trail $A0 - distinct from the trail shimmer's white pulse) via
+; SET_BITMAP_COLOR; the cell reverts to $A0 as the spark moves on.
 ; Called every playing frame (right after UPDATE_PLAYER); no-op when not drawing.
 ; ----------------------------------------------------------------------------
 UPDATE_FUSE:
@@ -8319,14 +8387,15 @@ UPDATE_FUSE:
         bcs @caught             ; reached the player's head
         ; fall through to repaint the spark on its new tile
 @flash:
-        ; flash white/yellow (~8-frame period) so the spark is easy to spot
+        ; frantic red/orange fire flicker (4-frame period) - unmistakably the
+        ; fuse, vs the trail shimmer's calm white pulse
         lda FRAME_COUNT
-        and #4
-        beq @white
-        lda #$70                ; yellow
-        bne @paint              ; $70 != 0, always taken
-@white:
-        lda #$10                ; white
+        and #$02
+        beq @orange
+        lda #$20                ; red
+        bne @paint              ; $20 != 0, always taken
+@orange:
+        lda #$80                ; orange
 @paint:
         jmp FUSE_PAINT
 @caught:
@@ -8350,8 +8419,11 @@ FUSE_SNUFF:
 
 ; FUSE_PAINT: A = bitmap colour byte; recolour the trail cell at FUSE_INDEX.
 FUSE_PAINT:
-        pha
         ldx FUSE_INDEX
+        ; fall through
+; TRAIL_CELL_PAINT: A = bitmap colour byte, X = trail-buffer index.
+TRAIL_CELL_PAINT:
+        pha
         lda TRAIL_BUFFER_Y, x
         sta TEMP1
         lda TRAIL_BUFFER_X, x
@@ -8359,6 +8431,43 @@ FUSE_PAINT:
         ldy TEMP1               ; Y = row
         pla                     ; A = colour
         jmp SET_BITMAP_COLOR    ; preserves X/Y, returns to our caller
+
+; ----------------------------------------------------------------------------
+; TRAIL SHIMMER - a white pulse marching tail -> head along the drawn trail,
+; so the line reads as live energy instead of static paint. One cell per two
+; frames; the head cell is left to the head spark, and the whole effect stands
+; down while the fuse is lit (the fuse owns the trail colours then). Called
+; every playing frame after UPDATE_TRAIL_SPARK.
+; ----------------------------------------------------------------------------
+UPDATE_TRAIL_SHIMMER:
+        ; restore the previously lit cell; SHIMMER_IDX = $FF means none, and a
+        ; stale index past TRAIL_COUNT (trail cleared/claimed) is skipped too
+        ldx SHIMMER_IDX
+        cpx TRAIL_COUNT
+        bcs +
+        lda #$A0                ; back to trail pink
+        jsr TRAIL_CELL_PAINT
++       ldx #$FF
+        stx SHIMMER_IDX
+        lda PLAYER_DRAWING
+        beq @ret
+        lda FUSE_ACTIVE
+        bne @ret
+        lda TRAIL_COUNT
+        cmp #4
+        bcc @ret                ; too short to read as a pulse
+        ; marching index = (FRAME_COUNT/2) mod TRAIL_COUNT
+        lda FRAME_COUNT
+        lsr
+@mod:   cmp TRAIL_COUNT
+        bcc +
+        sbc TRAIL_COUNT         ; carry already set by cmp
+        jmp @mod
++       sta SHIMMER_IDX
+        tax
+        lda #$10                ; white pulse over the pink line
+        jmp TRAIL_CELL_PAINT
+@ret:   rts
 
 ; (QIX_FRAMES plasma-orb sprite data was moved to the $3880 segment - see the
 ; block just before "* = $3B00" - to keep this $3B00 block below GAMEPLAY_BITMAP
@@ -8492,11 +8601,8 @@ PLAYER_ARROWS:
         !byte $FF,$FF,$7E,$7E,$3C,$3C,$18,$18   ; down
         !byte $18,$38,$78,$F8,$F8,$78,$38,$18   ; left
         !byte $C0,$E0,$F0,$F8,$F8,$F0,$E0,$C0   ; right
-ARROW_DEST:
-        !byte 0,3,6,9,12,15,18,21
-        !byte 64,67,70,73,76,79,82,85
-        !byte 128,131,134,137,140,143,146,149
-        !byte 192,195,198,201,204,207,210,213
+; (ARROW_DEST offset table reclaimed - COPY_SPRITES_TO_BANK1 computes the
+; scatter offsets inline now; this packed block needed the 32 bytes back.)
 
 ; ============================================================================
 ; PLAYER DEATH EXPLOSION (sprite 6)
