@@ -3161,6 +3161,8 @@ UPDATE_DYING:
         sta PLAYER_DRAWING
         sta TRAIL_COUNT
         sta FILL_STATE          ; Clear any in-progress fill operation
+        sta FUSE_ACTIVE         ; disarm stale fuse/head-spark: their snuffs
+        sta SPARK_ON            ;   would repaint dead trail cells pink ($A0)
 
         ; Reset Qix to centre, but only if the centre is still open. Claimed
         ; territory persists across deaths, so a blind reset can drop the Qix
@@ -3203,10 +3205,10 @@ CLEAR_TRAIL:
         sta (SCREEN_LO), y
         lda #COL_DGREY
         sta (COLOR_LO), y
-        ; Clear bitmap cell
+        ; Clear bitmap cell (re-ghosts it on photo levels)
         ldx SAVE_X              ; X = column
         ldy SAVE_Y              ; Y = row
-        jsr CLEAR_BITMAP_CELL
+        jsr RESTORE_TRAIL_CELL
         ; Restore loop counter and continue
         pla
         tax
@@ -8813,6 +8815,19 @@ END_DEATH_BURST:
         sta VIC_SPRITE_EXPY
         rts
 
+; Death-erase of one trail cell (X=col, Y=row, mirrored in SAVE_X/SAVE_Y).
+; On a photo level a plain clear left a black gap in the ghost image, so
+; re-ghost via REVEAL_K instead - it sees GAME_STATE=2 (dying) and paints
+; the $B0 etching colour in place of the staged true colour. Starfield AND
+; knekke levels (PHOTO_LEVEL 0/2) keep the black clear: revealing a knekke
+; cell here would leak readable email text before it is claimed.
+RESTORE_TRAIL_CELL:
+        lda PHOTO_LEVEL
+        cmp #1                  ; equal also leaves C=1 for BANKED_BG below
+        beq @ghost
+        jmp CLEAR_BITMAP_CELL   ; tail-call, preserves X/Y
+@ghost: jmp BANKED_BG           ; C=1 -> REVEAL_K on SAVE_X/SAVE_Y
+
 !if * > GAMEPLAY_BITMAP { !error "$3B00 block overflowed into GAMEPLAY_BITMAP ($4000): ", * }
 
 ; ============================================================================
@@ -10248,7 +10263,11 @@ REVEAL_K:
         dey
         bpl @copy
         pla                     ; the staged colour
-        ldx SAVE_X
+        ldx GAME_STATE
+        cpx #2                  ; dying = death-erase re-ghost (RESTORE_TRAIL_
+        bne +                   ; CELL), not a claim: keep the cell ghosted
+        lda #$B0
++       ldx SAVE_X
         ldy SAVE_Y
         jmp SET_BITMAP_COLOR    ; visible RAM; returns to the BANKED_BG stub
 
