@@ -4680,10 +4680,10 @@ RANDOM:
 ; SYNTH-POP HEARTBREAK MUSIC ENGINE
 ; ============================================================================
 ; "Claiming On My Own" - borrows heavily from Robyn's "Dancing On My Own":
-; the vi-IV-I-V loop (here C#m/A/E/B), ~125 BPM four-on-the-floor with
-; offbeat hats, a pumping straight-8ths saw bass, and a chorus-shaped lead
-; (insistent repeated 5th -> sequenced answer -> lift to a syncopated peak
-; -> the falling "oh oh oh"). Big lights, empty dance floor, keep cutting.
+; the vi-IV-I-V loop (here C#m/A/E/B) at ~115 BPM, four-on-the-floor with
+; offbeat hats and a dead-flat pumping straight-8ths pulse bass. Purely
+; instrumental - no melody voice, just the hypnotic groove the record opens
+; on. Big lights, empty dance floor, keep cutting.
 
 INIT_MUSIC:
         ; Reset music state
@@ -4711,15 +4711,15 @@ INIT_MUSIC:
         lda #$B5            ; Sustain=B, Release=5 - full body, pumping tail
         sta SID_SR1
 
-        ; Voice 2: Chorus "vocal" lead - fat 50% pulse with a breathed-in
-        ; attack so held notes read as sung, not plucked
+        ; Voice 2: no melody - reserved for SFX blips (SFX_CONNECT sets its
+        ; own envelope; this is just a sane baseline state)
         lda #$00
         sta SID_PW_LO2
-        lda #$08            ; ~50% pulse - warm, thick square
+        lda #$08            ; ~50% pulse
         sta SID_PW_HI2
-        lda #$16            ; Attack=1, Decay=6 - soft vocal onset
+        lda #$16            ; Attack=1, Decay=6
         sta SID_AD2
-        lda #$95            ; Sustain=9, Release=5 - notes sing across rests
+        lda #$95            ; Sustain=9, Release=5
         sta SID_SR2
 
         ; Voice 3: Powerful drum - noise, softened transient + rounder body
@@ -4838,28 +4838,11 @@ UPDATE_MUSIC:
         sta SID_CTRL3
 
 @do_lead:
-        ; === LEAD MELODY (Voice 2, full 16th grid) ===
-        ldx MUSIC_POS
-        lda ARP_POS         ; loop counter: 0 = first pass after INIT_MUSIC,
-        beq @lead_off       ; bass+drums only - the song opens on the groove
-        lda LEAD_PATTERN, x
-        cmp #$FF
-        beq @lead_off
-
-        tay
-        lda NOTE_FREQ_LO, y
-        sta SID_FREQ_LO2
-        lda NOTE_FREQ_HI, y
-        sta SID_FREQ_HI2
-        lda #$41            ; Gate on, pulse wave
-        sta SID_CTRL2
-        jmp @advance
-
-@lead_off:
+        ; Voice 2 carries no melody - it is reserved for SFX blips
+        ; (SFX_CONNECT), which rely on this per-step gate-off to stay short.
         lda #$40            ; Gate off
         sta SID_CTRL2
 
-@advance:
         ; Advance pattern position
         inc MUSIC_POS
         lda MUSIC_POS
@@ -4867,9 +4850,6 @@ UPDATE_MUSIC:
         bcc @done
         lda #0
         sta MUSIC_POS
-        lda ARP_POS         ; completed a loop: let the vocal in (cap at 1
-        bne @done           ; so it never wraps back to the intro state)
-        inc ARP_POS
 
 @done:
         rts
@@ -5449,15 +5429,14 @@ NOTE_FREQ_HI:
         !byte $13,$14,$15,$17,$19,$1A,$1C,$1E
 
 ; ----------------------------------------------------------------------------
-; "Claiming On My Own" - Robyn "Dancing On My Own"-inspired synth-pop.
-; 4 bars, one chord per bar: the heartbreak-banger loop vi-IV-I-V in E major
+; "Claiming On My Own" - Robyn "Dancing On My Own"-inspired synth-pop groove.
+; Instrumental bed only (no melody line - voice 2 is left to the SFX blips):
+; 4 bars, one chord per bar, the heartbreak-banger loop vi-IV-I-V in E major
 ;     | C#m | A | E | B |
-; 115.4 BPM (16ths alternate 6/7 frames; 8ths are a straight 13). The first
-; loop after INIT_MUSIC is bass+drums only - the song opens on the groove -
-; then the "vocal" enters. Bass & drums are 8th-grid patterns (32 entries,
-; indexed MUSIC_POS/2); the lead is the full 16th grid (64 entries).
-; UPDATE_MUSIC chops voices 1+3 on odd 16ths - every bass 8th pumps and
-; every drum hit retriggers without needing $FF slots here.
+; 115.4 BPM (16ths alternate 6/7 frames; 8ths are a straight 13). Bass &
+; drums are 8th-grid patterns (32 entries, indexed MUSIC_POS/2); the 64-step
+; 16th sequence exists so UPDATE_MUSIC can chop voices 1+3 on odd 16ths -
+; every bass 8th pumps and every drum hit retriggers without $FF slots here.
 ; ----------------------------------------------------------------------------
 
 ; Bass - dead-flat straight 8ths on the chord root, changing exactly at the
@@ -5469,28 +5448,6 @@ BASS_PATTERN:
         !byte 5, 5, 5, 5, 5, 5, 5, 5             ; Bar 2 (A)
         !byte 12, 12, 12, 12, 12, 12, 12, 12     ; Bar 3 (E)
         !byte 7, 7, 7, 7, 7, 7, 7, 7             ; Bar 4 (B)
-
-; Lead - the chorus vocal, transcribed for one pulse voice (16th grid).
-; $FF = gate off; a repeated value HOLDS the note (gate stays up, no
-; re-attack), so syllables are note+$FF pairs and long notes are runs.
-;   Bar 1: "I'm in the cor-ner"    - hammered G#s falling to a held E
-;   Bar 2: "watch-ing you kiss her"- hammered F#s falling E -> held C#
-;   Bar 3: "oh... oh... oh..."     - the held B4 peak stepping down G#, F#
-;   Bar 4: "I keep dan-cing on my own" - the title line settling on low B
-; Refs: 31=B3, 33=C#4, 35=D#4, 36=E4, 38=F#4, 40=G#4, 43=B4
-LEAD_PATTERN:
-        ; Bar 1 (C#m): I'm(G#) in(G#) the(G#) cor(G#) -ner(E held)
-        !byte 40, $FF, 40, $FF, 40, $FF, 40, $FF
-        !byte 36, 36, 36, $FF, $FF, $FF, $FF, $FF
-        ; Bar 2 (A): watch(F#) -ing(F#) you(F#) kiss(E) her(C# held)
-        !byte 38, $FF, 38, $FF, 38, $FF, 36, $FF
-        !byte 33, 33, 33, $FF, $FF, $FF, $FF, $FF
-        ; Bar 3 (E): oh(B4, half note) oh(G#) oh(F#) - the ache
-        !byte 43, 43, 43, 43, 43, 43, $FF, $FF
-        !byte 40, 40, 40, $FF, 38, 38, 38, $FF
-        ; Bar 4 (B): I(D#) keep(D#) dan(E) -cing(D#) on(C#) my(C#) own(B held)
-        !byte 35, $FF, 35, $FF, 36, $FF, 35, $FF
-        !byte 33, $FF, 33, $FF, 31, 31, 31, $FF
 
 ; Drums - voice 3 NOISE on the 8th grid, pitch index shapes the hit:
 ; Kick=0 (deep boom) on 1 & 3, Clap=20 (bright crack) on 2 & 4, offbeat
