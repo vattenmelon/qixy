@@ -461,6 +461,7 @@ MAIN_LOOP:
         jsr CHECK_COLLISIONS
         jsr UPDATE_SPRITES
         jsr ANIMATE_COLORS
+        jsr POPUP_TICK          ; score-popup countdown / expiry erase
         jmp MAIN_LOOP
 
 @dying:
@@ -474,6 +475,16 @@ MAIN_LOOP:
 @game_over:
         jsr UPDATE_GAME_OVER
         jmp MAIN_LOOP
+
+; Score-popup countdown: when the readout's timer expires, one HUD redraw
+; (buffer rebuilt with POPUP_TIMER = 0) erases it from the panel.
+POPUP_TICK:
+        lda POPUP_TIMER
+        beq +
+        dec POPUP_TIMER
+        bne +
+        jmp DRAW_HUD
++       rts
 
 ; ============================================================================
 ; WAIT FOR FRAME (Vertical blank sync)
@@ -2442,6 +2453,15 @@ UPDATE_CALC_PERCENTAGE:
 @pct_ok:
         sta PERCENT_CLAIMED
 
+        ; Score popup: this claim's % gain, shown beside the fill bar by the
+        ; UPDATE_HUD below (POPUP_HUD_HOOK) while POPUP_TIMER runs
+        sec
+        sbc PREV_PERCENT
+        beq @no_pop             ; gained under 1% - nothing to show
+        sta POPUP_VAL
+        lda #120                ; ~2.4s
+        sta POPUP_TIMER
+@no_pop:
         jsr UPDATE_HUD
 
         ; Fill completely done - finish up
@@ -5901,6 +5921,9 @@ BONUS_HUNDREDS  = $C6F8  ; level bonus in hundreds, shown by DRAW_CLEAR_CARD
 PAUSE_DRAWN     = $C6F9  ; 1 = pause card on screen and PAUSE_SAVE is valid
 ; Trail shimmer: a white pulse marching tail->head along the drawn trail
 SHIMMER_IDX     = $C6FB  ; trail-buffer index currently lit ($FF = none)
+; Score popup: "+NN" (percent gained) beside the fill bar after each claim
+POPUP_VAL       = $C6FC  ; percent gained by the last claim
+POPUP_TIMER     = $C6FF  ; frames left to show the readout (0 = hidden)
 ; Attract mode: title <-> high-score table auto-cycle when idle
 ATTRACT_TIMER   = $C6FD  ; idle counter (inc every 2nd frame; wrap = flip screen)
 ATTRACT_PREV_FIRE = $C6FE ; fire edge detect (armed on screen entry)
@@ -7630,13 +7653,18 @@ DRAW_STARFIELD:
 DRAW_STAR_TILE:
         stx TEMP3                   ; col
         sty TEMP4                   ; row
-        ; pattern source = STAR_PATTERNS + (RANDOM & 7) * 8 (RANDOM keeps X/Y)
+        ; pattern: RANDOM & 7 -> 0-4 = the shared empty pattern, 5-7 = dots
+        ; (the table stores 4 patterns; the 5 empty entries it used to hold
+        ; were identical, reclaimed for the score popup below)
         jsr RANDOM
         and #$07
+        sec
+        sbc #4
+        bcs +
+        lda #0                      ; 0-4 -> empty (same 5-in-8 odds as before)
++       asl
         asl
-        asl
-        asl
-        clc
+        asl                         ; A <= 24, so the shifts never carry
         adc #<STAR_PATTERNS
         sta TEMP1
         lda #0
@@ -7671,14 +7699,33 @@ DRAW_STAR_TILE:
         jmp SET_BITMAP_COLOR        ; preserves X/Y, tail-call
 
 STAR_PATTERNS:
-        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 0 empty
-        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 1 empty
-        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 2 empty
-        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 3 empty
-        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 4 empty
-        !byte $00,$00,$20,$00,$00,$00,$00,$00   ; 5 dot (col 2, row 2)
-        !byte $00,$00,$00,$00,$00,$02,$00,$00   ; 6 dot (col 6, row 5)
-        !byte $00,$08,$00,$00,$00,$00,$40,$00   ; 7 dots (col 4,row 1)+(col 1,row 6)
+        !byte $00,$00,$00,$00,$00,$00,$00,$00   ; 0 empty (picked 5 times in 8)
+        !byte $00,$00,$20,$00,$00,$00,$00,$00   ; 1 dot (col 2, row 2)
+        !byte $00,$00,$00,$00,$00,$02,$00,$00   ; 2 dot (col 6, row 5)
+        !byte $00,$08,$00,$00,$00,$00,$40,$00   ; 3 dots (col 4,row 1)+(col 1,row 6)
+
+; ----------------------------------------------------------------------------
+; SCORE POPUP HOOK (chained from HUD_STYLE_COLORS at every HUD rebuild)
+; ----------------------------------------------------------------------------
+; While POPUP_TIMER runs, writes "+NN" (the last claim's % gain, bold bright
+; green) into the HUD buffer beside the fill bar (row 1, cols 35-37). Spawned
+; by the percentage-calc phase; the countdown in the main loop redraws the
+; HUD once when it expires, which erases it.
+POPUP_HUD_HOOK:
+        lda POPUP_TIMER
+        beq @done
+        lda #$2B                ; '+'
+        sta HUD_BUF + 75
+        lda POPUP_VAL
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 76
+        sty HUD_BUF + 77
+        ldx #2
+        lda #$50 | HUD_BG       ; bright green on the panel
+-       sta HUD_COLOR + 75, x
+        dex
+        bpl -
+@done:  rts
 
 ; ============================================================================
 ; CLAIM CAPTURE-FLASH (fill phase 6) - in the $3880 gap
@@ -7822,6 +7869,10 @@ SPARK_SHAPE:
 ; by FRAME_COUNT so the sparx crackle; Sparx 2 runs offset for variety.
 SPARK_COLORS:
         !byte COL_WHITE, COL_YELLOW, COL_ORANGE, COL_YELLOW
+
+; Guard: this $3880 gap block must stay below the $3B00 block's start.
+SEG3880_END:
+!if SEG3880_END > $3B00 { !error "$3880 gap overflowed into the $3B00 block: ", SEG3880_END }
 
 ; ============================================================================
 * = $3B00
@@ -9299,6 +9350,7 @@ BEGIN_LEVEL:
         sta BONUS_HUNDREDS      ; consumed - the cheat path shows no stale bonus
         sta PAUSED              ; boot disk LOAD leaves $42 dirty - see above
         sta PAUSE_DRAWN
+        sta POPUP_TIMER         ; no stale claim readout on the fresh HUD
         lda #INTRO_FRAMES
         sta DEATH_TIMER
         lda #1
@@ -9431,7 +9483,7 @@ HUD_STYLE_COLORS:
 -       sta HUD_COLOR + 47, x
         dex
         bpl -
-        rts
+        jmp POPUP_HUD_HOOK      ; "+NN" claim readout beside the fill bar
 
 ; Chunky double-stroke arcade digits (hires, 1 = ink).
 BOLD_DIGITS:
