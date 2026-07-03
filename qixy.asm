@@ -6858,7 +6858,7 @@ UPDATE_HUD_BUF:
         inx
         bne @li
 @li_done:
-        ; Lives as diamond icons at col 7 (code $00 = the icon glyph, drawn by
+        ; Lives as diamond icons at col 7 (code $1E = the icon glyph, drawn by
         ; DRAW_HUD_GLYPH). Max 4 icons; more lives show as 4 icons and a '+'.
         ldy LIVES
         cpy #5
@@ -6866,7 +6866,7 @@ UPDATE_HUD_BUF:
         lda #$2B                    ; '+'
         sta HUD_BUF + 51
         ldy #4
-+       lda #$00
++       lda #$1E
         dey
         bmi @li_none
 -       sta HUD_BUF + 47, y
@@ -8942,6 +8942,7 @@ OLD_IRQ_HI: !byte 0
 INIT_CPU_SPEED:
         php
         sei
+        jsr INSTALL_KNEKKE               ; boot-only: painter -> under KERNAL
         lda #FLOOD_OPS_PER_FRAME         ; defaults: C64 / Ultimate unchanged
         sta FLOOD_OPS
         lda #SCAN_OPS_PER_FRAME
@@ -9005,6 +9006,23 @@ IRQ_C128_RASTER:
         rti
 @chain:
         jmp (OLD_IRQ_LO)
+
+; ----------------------------------------------------------------------------
+; Boot-only: copy the knekkebrod painter from its .prg ship window (the
+; $C000 fill-stack region, trashed by gameplay afterwards) to KNEKKE_K
+; ($F80C, RAM under the KERNAL). Stores write through the ROM, so no banking
+; is needed. Copies a fixed 768 bytes (reads past the ship end are harmless).
+INSTALL_KNEKKE:
+        ldx #0
+-       lda KNEKKE_SHIP, x
+        sta KNEKKE_K, x
+        lda KNEKKE_SHIP + 256, x
+        sta KNEKKE_K + 256, x
+        lda KNEKKE_SHIP + 512, x
+        sta KNEKKE_K + 512, x
+        inx
+        bne -
+        rts
 
 ; ----------------------------------------------------------------------------
 ; Draw "<machine> - <video>" centred on row 23 of the high-score screen.
@@ -9426,18 +9444,18 @@ DRAW_HUD_GLYPH:
         asl
         clc
         adc #<BOLD_DIGITS
-        sta TEMP1
+        sta CHAR_PTR
         lda #0
         adc #>BOLD_DIGITS
-        sta TEMP2
+        sta CHAR_PTR_HI
         bne @blit               ; always ($CExx)
 @chk_icon:
-        cmp #$00
-        bne @stock
+        cmp #$1E                ; life-icon sentinel ($1E = unused up-arrow;
+        bne @stock              ; $00 must stay '@' for the knekkebrod email)
         lda #<LIFE_ICON
-        sta TEMP1
+        sta CHAR_PTR
         lda #>LIFE_ICON
-        sta TEMP2
+        sta CHAR_PTR_HI
         bne @blit               ; always
 @stock: jmp DRAW_BITMAP_CHAR
 
@@ -9459,7 +9477,7 @@ DRAW_HUD_GLYPH:
         bcc +
         inc SCREEN_HI
 +       ldy #0
--       lda (TEMP1), y
+-       lda (CHAR_PTR), y
         sta (SCREEN_LO), y
         iny
         cpy #8
@@ -9692,11 +9710,12 @@ BROW_ADDR:
         rts
 
 ; Fill the playfield interior for the current level and set PHOTO_LEVEL.
-; Every 3rd level (3, 6, 9, ...) is a photo level: one of the three images,
-; rotated by LEVEL mod 9 (3 -> level-2 image, 6 -> level-4 image, 0 -> the
-; RLE level-10 image). All other levels get the starfield, and their claims
-; keep the classic material textures. Each painter fully repaints every
-; interior cell, wiping the intro card. Runs banked (called from PREP_K).
+; Every 3rd level (3, 6, 9, 12, ...) is a photo level: one of FOUR images,
+; rotated by LEVEL mod 12 (3 -> level-2 image, 6 -> level-4 image, 9 -> the
+; RLE level-10 image, 0 -> the knekkebrod email, typeset at runtime). All
+; other levels get the starfield, and their claims keep the classic material
+; textures. Each painter fully repaints every interior cell, wiping the
+; intro card. Runs banked (called from PREP_K).
 PAINT_LEVEL_INTERIOR:
         lda #0
         sta PHOTO_LEVEL
@@ -9709,17 +9728,29 @@ PAINT_LEVEL_INTERIOR:
         bne @starfield          ; remainder 1 or 2 -> a starfield level
         inc PHOTO_LEVEL
         lda LEVEL
-@mod9:  cmp #9
+@mod12: cmp #12
         bcc +
-        sbc #9
-        bcs @mod9               ; always taken
+        sbc #12
+        bcs @mod12              ; always taken
 +       tax                     ; ditto
-        beq @bg10               ; 9, 18, ... -> level-10 image
+        beq @knekke             ; 12, 24, ... -> the knekkebrod email
         cmp #3
-        beq @bg2                ; 3, 12, ... -> level-2 image
-        jmp OVERLAY_LEVEL4_BG   ; 6, 15, ... -> level-4 image
+        beq @bg2                ; 3, 15, ...  -> level-2 image
+        cmp #6
+        beq @bg4                ; 6, 18, ...  -> level-4 image
+        jmp DECOMPRESS_LEVEL10_BG ; 9, 21, ... -> level-10 image
 @bg2:   jmp OVERLAY_LEVEL2_BG
-@bg10:  jmp DECOMPRESS_LEVEL10_BG
+@bg4:   jmp OVERLAY_LEVEL4_BG
+@knekke:
+        inc PHOTO_LEVEL         ; = 2: a TEXT image - its ghost would be
+                                ; readable, so PREP_K hides it behind the
+                                ; starfield instead (reveal works the same)
+        lda #$35                ; painter + its strings live under the KERNAL
+        sta $01                 ; (sei is held on this path - no overlay ran)
+        jsr KNEKKE_K
+        lda #$36
+        sta $01
+        rts
 @starfield:
         jmp DRAW_STARFIELD
 
@@ -9735,8 +9766,13 @@ PREP_K:
         sta VIC_CTRL1
         jsr PAINT_LEVEL_INTERIOR
         jsr STASH_K
-        lda VIC_CTRL1
-        ora #$10                ; display on: the field is already ghosted
+        lda PHOTO_LEVEL
+        cmp #2
+        bne +
+        jsr DRAW_STARFIELD      ; text image: cover the (readable) ghost with
+                                ; the starfield - the stages hold the real thing
++       lda VIC_CTRL1
+        ora #$10                ; display on: the field is hidden either way
         sta VIC_CTRL1
         rts
 
@@ -9797,6 +9833,138 @@ STASH_K:
         bne @brow
         rts
 
+!if * > $C000 { !error "reveal module overflowed past the BASIC ROM window ($C000): ", * }
+!if COLOR_STAGE + 684 > $FFFA { !error "colour stage overlaps the CPU vectors" }
+
+; ============================================================================
+; THE KNEKKEBROD EMAIL (4th rotating photo-level image)
+; ----------------------------------------------------------------------------
+; knekkebrod.jpeg is a text document, and 288x152 hires pixels cannot render a
+; photographed page legibly - so the painter TYPESETS the email at runtime
+; with the game's own charset via the card machinery: white paper interior,
+; black ink, the redaction bar, and the ruled separator. No image data at all.
+; The ghost/reveal machinery treats it like any photo: the ghost shows grey
+; text on black, claims reveal crisp black-on-white paper.
+;
+; The code+strings SHIP at $C000-$C2FF (the fill-stack boot-trash window of
+; the .prg - a prg cannot span the $D000 I/O range, so nothing can load at
+; $F80C directly) and are copied to $F80C, under the KERNAL, by
+; INSTALL_KNEKKE at boot. Runs at $01=$35 with sei held (see the dispatch).
+; ============================================================================
+* = $C000
+KNEKKE_SHIP:
+!pseudopc $F80C {
+
+KNEKKE_K:
+        ; --- pass 1: interior colours = $01 (black ink on white paper) ---
+        lda #<(GAMEPLAY_SCREEN + 4*40)
+        sta TEMP1
+        lda #>(GAMEPLAY_SCREEN + 4*40)
+        sta TEMP2
+        ldx #19                 ; interior rows 4-22
+@crow:  ldy #2
+        lda #$01
+@ccol:  sta (TEMP1), y
+        iny
+        cpy #38
+        bne @ccol
+        lda TEMP1
+        clc
+        adc #40
+        sta TEMP1
+        bcc +
+        inc TEMP2
++       dex
+        bne @crow
+
+        ; --- pass 2: interior bitmap = 0 (blank paper) ---
+        ldx #4                  ; char rows 4-22
+@brow:  jsr BROW_ADDR           ; TEMP1/2 = bitmap row interior start
+        ldy #0
+        tya
+@b1:    sta (TEMP1), y          ; 256 of the row's 288 bytes
+        iny
+        bne @b1
+        inc TEMP2
+@b2:    sta (TEMP1), y          ; remaining 32
+        iny
+        cpy #32
+        bne @b2
+        inx
+        cpx #23
+        bne @brow
+
+        ; --- typeset the email: table-driven lines via the card printer ---
+        lda #$01
+        sta CARD_COLOR          ; black ink on white paper
+        lda #0
+        sta CARD_TMP            ; line index
+@line:  ldx CARD_TMP
+        lda KNK_ROWS, x
+        beq @extras             ; row 0 terminates the table
+        sta CARD_ROW
+        lda KNK_PTRS_HI, x
+        tay
+        lda KNK_PTRS_LO, x
+        pha
+        lda KNK_COLS, x
+        tax
+        pla
+        jsr CARD_PRINT          ; A = <str, Y = >str, X = column
+        inc CARD_TMP
+        bne @line               ; always taken
+
+@extras:
+        ; the redaction bar: solid black cells on the From line
+        ldx #27
+-       ldy #5
+        jsr FILL_BITMAP_CELL    ; solid $FF; preserves X/Y
+        inx
+        cpx #34
+        bne -
+        ; the '@' of the address (screen code $00, drawn by hand - see table)
+        lda #8
+        sta CARD_ROW
+        lda #18
+        sta CARD_COL
+        lda #$00
+        jsr DRAW_CARD_GLYPH
+        ; ruled separator: a row of dashes
+        lda #14
+        sta CARD_ROW
+        lda #2
+        sta CARD_COL
+-       lda #$2D                ; '-'
+        jsr DRAW_CARD_GLYPH
+        lda CARD_COL
+        cmp #36
+        bne -
+        ; the two danish o-slashes: OR a slash over the 'O' cells
+        lda #1
+        sta CARD_TMP            ; patch index 1..0
+@oslash:
+        ldx CARD_TMP
+        ldy KNK_O_ROW, x
+        lda BITMAP_ROW_LO, y
+        clc
+        adc KNK_O_COLx8, x
+        sta TEMP1
+        lda BITMAP_ROW_HI, y
+        adc #0
+        sta TEMP2
+        ldy #7
+-       lda (TEMP1), y
+        ora KNK_SLASH, y
+        sta (TEMP1), y
+        dey
+        bpl -
+        dec CARD_TMP
+        bpl @oslash
+        rts
+
+; --- the reveal routines live here too: they only ever run at $01=$35
+; (stage reads need the KERNAL out), so they ship+copy with the painter,
+; freeing room in the packed under-BASIC module. ---
 ; Level-complete payoff: flood the whole interior with the finished image
 ; by running the per-cell reveal over every interior cell (sweeps across the
 ; field in a few frames). Runs under the banner card, which draws after us.
@@ -9909,8 +10077,35 @@ REVEAL_K:
         ldy SAVE_Y
         jmp SET_BITMAP_COLOR    ; visible RAM; returns to the BANKED_BG stub
 
-!if * > $C000 { !error "reveal module overflowed past the BASIC ROM window ($C000): ", * }
-!if COLOR_STAGE + 684 > $FFFA { !error "colour stage overlaps the CPU vectors" }
+; line table: row, start column, string pointer (row 0 = end).
+; The address is split around the '@' - screen code $00 would terminate the
+; string, so @extras draws that one glyph by hand between the two halves.
+KNK_ROWS:    !byte 5,  7,  8,  8,  10, 12, 16, 18, 20, 5,  0
+KNK_COLS:    !byte 2,  2,  6,  19, 2,  2,  2,  2,  2,  34, 0
+KNK_PTRS_LO: !byte <KNK_S1, <KNK_S2, <KNK_S3, <KNK_S3B, <KNK_S4, <KNK_S5, <KNK_S6, <KNK_S7, <KNK_S8, <KNK_S9
+KNK_PTRS_HI: !byte >KNK_S1, >KNK_S2, >KNK_S3, >KNK_S3B, >KNK_S4, >KNK_S5, >KNK_S6, >KNK_S7, >KNK_S8, >KNK_S9
+
+KNK_S1: !scr "from: thorbjorn jagland <", 0
+KNK_S2: !scr "to: jeffrey epstein", 0
+KNK_S3: !scr "<jeevacation", 0
+KNK_S3B: !scr "gmail.com>", 0
+KNK_S4: !scr "subject:", 0
+KNK_S5: !scr "date: mon, 06 oct 2014", 0
+KNK_S6: !scr "how is you breakfast to day.", 0
+KNK_S7: !scr "i tok a knekkebrod in oslo", 0
+KNK_S8: !scr "t", 0
+KNK_S9: !scr ">", 0
+
+; o-slash patches: "thorbjOrn" (row 5: "from: thorbj" = 12 -> col 14) and
+; "knekkebrOd" (row 18: "i tok a knekkebr" = 16 -> col 18)
+KNK_O_ROW:   !byte 5, 18
+KNK_O_COLx8: !byte 14*8, 18*8
+KNK_SLASH:   !byte $00,$02,$04,$08,$10,$20,$40,$00
+
+}
+KNEKKE_SHIP_END:
+!if KNEKKE_SHIP_END - KNEKKE_SHIP > 768 { !error "knekkebrod painter exceeds the 768-byte ship window/boot copy" }
+!if KNEKKE_SHIP_END > $C320 { !error "knekkebrod ship overlaps the machine-detect module ($C320)" }
 
 ; ============================================================================
 ; END
