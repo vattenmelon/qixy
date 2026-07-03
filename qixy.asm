@@ -868,6 +868,13 @@ INIT_SPRITES:
         lda #%00001111
         sta VIC_SPRITE_EN
 
+        ; Hardware-double the sparx sprites (2,3 + sparx 3 on 5) so the little
+        ; spark reads clearly. All other expand-reg writes are read-modify-
+        ; write on bits 4/6 (explosion bursts), so these bits hold all session.
+        lda #%00101100
+        sta VIC_SPRITE_EXPX
+        sta VIC_SPRITE_EXPY
+
         ; Clear MSB
         lda #0
         sta VIC_SPRITE_MSB
@@ -3289,9 +3296,10 @@ UPDATE_SPRITES:
         adc #QIX_ANIM_SLOT
         sta GAMEPLAY_SCREEN + $3F9
 
-        ; Sparx 1 sprite (sprite 2)
+        ; Sparx 1 sprite (sprite 2). Sparx sprites are hardware-doubled, so
+        ; they use CALC_SPARX_X / offset 48 to stay centred on their tile.
         lda SPARX1_X
-        jsr CALC_SPRITE_X
+        jsr CALC_SPARX_X
         sta VIC_SPRITE_X2
         bcc @s1_no_msb
         lda VIC_SPRITE_MSB
@@ -3303,12 +3311,12 @@ UPDATE_SPRITES:
         asl
         asl
         clc
-        adc #50             ; Standard C64 Y offset
+        adc #48             ; Y offset 50 less 2 (expanded-sparx centring)
         sta VIC_SPRITE_Y2
 
         ; Sparx 2 sprite (sprite 3)
         lda SPARX2_X
-        jsr CALC_SPRITE_X
+        jsr CALC_SPARX_X
         sta VIC_SPRITE_X3
         bcc @s2_no_msb
         lda VIC_SPRITE_MSB
@@ -3320,7 +3328,7 @@ UPDATE_SPRITES:
         asl
         asl
         clc
-        adc #50             ; Standard C64 Y offset
+        adc #48             ; Y offset 50 less 2 (expanded-sparx centring)
         sta VIC_SPRITE_Y3
 
         ; Sparx colour flicker: cycle SPARK_COLORS so the sparks crackle.
@@ -5780,7 +5788,7 @@ DRAW_SPARX3_SPRITE:
         sta VIC_SPRITE_COL + 5      ; sprite 5 colour = $D02C
 
         lda SPARX3_X
-        jsr CALC_SPRITE_X
+        jsr CALC_SPARX_X            ; hardware-doubled sparx: centred X
         sta VIC_SPRITE_X0 + 10      ; sprite 5 X = $D00A
         bcc @no_msb
         lda VIC_SPRITE_MSB
@@ -5792,7 +5800,7 @@ DRAW_SPARX3_SPRITE:
         asl
         asl
         clc
-        adc #50                     ; Standard C64 Y offset
+        adc #48                     ; Y offset 50 less 2 (expanded centring)
         sta VIC_SPRITE_X0 + 11      ; sprite 5 Y = $D00B
         rts
 
@@ -7860,15 +7868,16 @@ UPDATE_TRAIL_SPARK:
         ldy SPARK_Y
         jmp SET_BITMAP_COLOR            ; tail-call
 
-; Sparx sprite shape: a small 4-point spark ("+"), 6 rows in the sprite's
-; top-left (matching the old square's footprint). Copied to both Sparx sprites
-; by INIT_SPRITES.
+; Sparx sprite shape: an 8-point starburst, 6 rows in the sprite's top-left.
+; The sparx sprites run with VIC 2x hardware expansion (see SPARX_SPRITE_REGS),
+; so on screen this reads as a bold 16x12 crackling spark. Copied to both
+; Sparx sprites by INIT_SPRITES.
 SPARK_SHAPE:
         !byte $18,$00,$00               ; ...XX...
-        !byte $18,$00,$00               ; ...XX...
+        !byte $99,$00,$00               ; X..XX..X
         !byte $FF,$00,$00               ; XXXXXXXX
         !byte $FF,$00,$00               ; XXXXXXXX
-        !byte $18,$00,$00               ; ...XX...
+        !byte $99,$00,$00               ; X..XX..X
         !byte $18,$00,$00               ; ...XX...
 
 ; Sparx colour flicker cycle (hot spark colours). UPDATE_SPRITES indexes this
@@ -9204,6 +9213,21 @@ UPDATE_TIMER:
         jmp PLAYER_DEATH        ; time's up - costs a life
 @draw:  jmp DRAW_TIMER
 @done:  rts
+
+; Sprite X for the hardware-doubled sparx (see INIT_SPRITES): 4px left of
+; CALC_SPRITE_X so the 16px-wide spark stays centred on its 8px border tile.
+; Returns like the original (A = low byte, carry = MSB); a borrow out of the
+; low byte correctly drops the MSB (tile 29: pixel 256 -> 252). Low byte is
+; never < 24 in the no-MSB case (tile 0 = pixel 24), so it cannot underflow.
+; (Placed in this module's tail - the blocks below $4000 are packed full.)
+CALC_SPARX_X:
+        jsr CALC_SPRITE_X
+        bcs @msb
+        sbc #3                  ; carry clear: subtracts 4
+        clc
+        rts
+@msb:   sbc #4                  ; carry set: exact; carry out = new MSB
+        rts
 
 SEGC320_END:
 !if SEGC320_END > $C5F0 { !error "$C320 module overflowed into QIX_SPEED ($C5F0): ", SEGC320_END }
