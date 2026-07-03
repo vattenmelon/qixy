@@ -5136,8 +5136,8 @@ QIX2_TILE_SOLID:
 ; ============================================================================
 ; Either activates the second Qix in the centre with a random launch angle
 ; (level 6+) or disables sprite 4 (earlier levels). Sprite 4 renders as a
-; multicolor plasma orb (DRAW_QIX2_ORB), sharing the animated frames installed
-; once by COPY_SPRITES_TO_BANK1.
+; multicolor plasma star (DRAW_QIX2_ORB) with its own twinkle frames
+; (QIX2_FRAMES), installed once per game by COPY_SPRITES_TO_BANK1's chain.
 INIT_QIX2:
         ; Never inherit a half-finished explosion from the previous level
         lda #0
@@ -5613,10 +5613,13 @@ GAMEPLAY_SCREEN = $6000     ; Screen RAM for bitmap colors ($6000-$63E7)
 GAMEPLAY_SPRITES = $6400    ; Sprite data in Bank 1 (after screen)
 PLAYER_DIAMOND_SLOT = (GAMEPLAY_SPRITES - $4000) / 64        ; 144: the diamond
 PLAYER_ARROW_SLOT   = (GAMEPLAY_SPRITES - $4000) / 64 + 4    ; 148: up/down/left/right
-; Sprite pointer slots: triangles 148-155, explosion burst 156 ($6700)
+; Sprite pointer slots: arrows 148-151, halo 152-153, explosion burst 156 ($6700)
 EXPLODE_SLOT     = (GAMEPLAY_SPRITES - $4000) / 64 + 4 + 8
 ; Main-Qix plasma-orb animation: 4 frames in slots 157-160 ($6740-$683F)
 QIX_ANIM_SLOT    = EXPLODE_SLOT + 1
+; Second-Qix plasma-star twinkle: 2 frames in slots 154-155 ($6680-$66FF).
+; Must stay EVEN - DRAW_QIX2_ORB composes the frame bit with ora, not adc.
+QIX2_ANIM_SLOT   = EXPLODE_SLOT - 2
 
 ; Enable HIRES bitmap mode for gameplay
 ; VIC Bank 1 ($4000-$7FFF), hires bitmap mode
@@ -6579,7 +6582,8 @@ COPY_SPRITES_TO_BANK1:
         sta VIC_SPRITE_MC0
         lda #COL_WHITE
         sta VIC_SPRITE_MC1
-        jmp INSTALL_HALO_SPRITES ; player glow ring -> slots 152-153 (tail-call)
+        jmp INSTALL_QIX2_FRAMES ; QIX2 star frames -> slots 154-155, then the
+                                ; player glow halo -> 152-153 (tail-call chain)
 
 ; Bitmap row address lookup table (25 rows)
 ; Each row = base + row * 320
@@ -8587,10 +8591,13 @@ UPDATE_TRAIL_SHIMMER:
 ; ============================================================================
 ; DRAW_QIX2_ORB - flying-state look for the second Qix (sprite 4)
 ; ----------------------------------------------------------------------------
-; Renders QIX2 as a multicolor plasma orb, a sibling of the main Qix. Split out
-; here (in the roomy $3B00 block) because its caller DRAW_QIX2_SPRITE lives in
-; the $2460 relocated block, which caps at SPRITE_RAM ($2800). Tail-called via
-; jmp, so it returns straight to DRAW_QIX2_SPRITE's caller.
+; Renders QIX2 as a multicolor plasma STAR - a spiky 4-pointed sibling of the
+; main Qix's round orb, so the two enemies read apart at a glance. Two frames
+; (QIX2_FRAMES, slots 154-155) stretch the star tall then wide, a twinkling
+; squash-and-stretch pulse. Split out here (in the roomy $3B00 block) because
+; its caller DRAW_QIX2_SPRITE lives in the $2460 relocated block, which caps
+; at SPRITE_RAM ($2800). Tail-called via jmp, so it returns straight to
+; DRAW_QIX2_SPRITE's caller.
 ; ============================================================================
 DRAW_QIX2_ORB:
         ; single size (clear any leftover expand from a prior explosion)
@@ -8604,17 +8611,15 @@ DRAW_QIX2_ORB:
         lda VIC_SPRITE_MCM
         ora #$10
         sta VIC_SPRITE_MCM
-        ; Spin the plasma core by cycling the pointer through the 4 shared
-        ; frames, offset half a cycle (eor #2) from Qix 1 so the two orbs never
-        ; spin in lockstep.
+        ; Twinkle: flip between the tall and wide star frames every 4 game
+        ; frames (same tempo as the main orb's spin). ora works because
+        ; QIX2_ANIM_SLOT is even.
         lda FRAME_COUNT
         lsr
         lsr
-        and #$03
-        eor #$02
-        clc
-        adc #QIX_ANIM_SLOT
-        sta GAMEPLAY_SCREEN + $3FC      ; sprite 4 pointer -> plasma frame
+        and #$01
+        ora #QIX2_ANIM_SLOT
+        sta GAMEPLAY_SCREEN + $3FC      ; sprite 4 pointer -> star frame
         ; Body still flashes green/white so QIX2 keeps its distinct, hotter
         ; identity versus the main Qix's slow hue cycle.
         lda FRAME_COUNT
@@ -9266,6 +9271,17 @@ CALC_SPARX_X:
         rts
 @msb:   sbc #4                  ; carry set: exact; carry out = new MSB
         rts
+
+; Banking stub for the QIX2 star-frame install: the frame data + copy loop
+; (QIX2_COPY) live under the BASIC ROM in the $BE6C module tail, so bank the
+; ROM out around the call. Runs from START_NEW_GAME, where $01 is $37; the
+; inc restores it. Tail of COPY_SPRITES_TO_BANK1's install chain.
+INSTALL_QIX2_FRAMES:
+        lda #$36
+        sta $01                 ; BASIC ROM out (KERNAL + IO stay in)
+        jsr QIX2_COPY
+        inc $01                 ; $36 -> $37
+        jmp INSTALL_HALO_SPRITES
 
 SEGC320_END:
 !if SEGC320_END > $C5F0 { !error "$C320 module overflowed into QIX_SPEED ($C5F0): ", SEGC320_END }
@@ -9955,6 +9971,38 @@ STASH_K:
         cpx #23
         bne @brow
         rts
+
+; ============================================================================
+; QIX2 PLASMA-STAR SPRITE FRAMES (multicolor) + copy loop
+; ----------------------------------------------------------------------------
+; The second Qix's own shape: a spiky 4-pointed plasma star (vs the main
+; Qix's round orb). Frame 0 stretches the star tall, frame 1 wide;
+; DRAW_QIX2_ORB flips between them every 4 frames for a twinkling pulse.
+; Same multicolor palette as the orb: 01 = MC0 orange rim (the arm tips),
+; 10 = body (QIX2's green/white flash), 11 = MC1 white-hot core.
+; Parked in this under-BASIC module's tail (the only sizeable gap left), so
+; INSTALL_QIX2_FRAMES in the $C320 module banks the ROM out ($01=$36) before
+; jsr-ing here. Generated by tools/qix2gen.py; regenerate, don't hand-edit.
+; ============================================================================
+QIX2_COPY:
+        ldx #0
+-       lda QIX2_FRAMES, x
+        sta GAMEPLAY_SPRITES + 640, x   ; bank-1 slots 154-155 ($6680-$66FF)
+        inx
+        bpl -                           ; all 128 bytes (2 x 64)
+        rts
+
+QIX2_FRAMES:
+        ; frame 0: tall star
+        !byte 0,0,0,0,0,0,0,20,0,0,20,0,0,20,0,0
+        !byte 40,0,0,40,0,0,105,0,0,105,0,1,190,64,5,190
+        !byte 80,1,190,64,0,105,0,0,105,0,0,40,0,0,40,0
+        !byte 0,20,0,0,20,0,0,20,0,0,0,0,0,0,0,0
+        ; frame 1: wide star
+        !byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        !byte 20,0,0,20,0,0,105,0,1,105,64,6,190,144,22,190
+        !byte 148,6,190,144,1,105,64,0,105,0,0,20,0,0,20,0
+        !byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
 !if * > $C000 { !error "reveal module overflowed past the BASIC ROM window ($C000): ", * }
 !if COLOR_STAGE + 684 > $FFFA { !error "colour stage overlaps the CPU vectors" }
