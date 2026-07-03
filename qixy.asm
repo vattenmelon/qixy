@@ -146,8 +146,8 @@ BITMAP_PTR      = $5D       ; Bitmap pointer (16-bit)
 BITMAP_PTR_HI   = $5E
 CHAR_PTR        = $5F       ; Pointer to charset data (16-bit)
 CHAR_PTR_HI     = $60
-STRING_PTR      = $61       ; Pointer to string data (16-bit)
-STRING_PTR_HI   = $62
+PHOTO_LEVEL     = $61       ; 1 = photo level (every 3rd: ghost/reveal), 0 = starfield
+STRING_PTR_HI   = $62       ; unused
 GRACE_TIMER     = $63       ; Post-claim invincibility timer (frames)
 PREV_PERCENT    = $64       ; Percentage before current claim (for extra life check)
 QIX_ACC         = $65       ; Qix sub-tile movement accumulator (1/64-tile units)
@@ -470,21 +470,14 @@ MAIN_LOOP:
 
 @level_done:
         jsr UPDATE_LEVEL_DONE
+        jsr LEVEL_DONE_TICK     ; deferred banner on photo levels
         jmp MAIN_LOOP
 
 @game_over:
         jsr UPDATE_GAME_OVER
         jmp MAIN_LOOP
 
-; Score-popup countdown: when the readout's timer expires, one HUD redraw
-; (buffer rebuilt with POPUP_TIMER = 0) erases it from the panel.
-POPUP_TICK:
-        lda POPUP_TIMER
-        beq +
-        dec POPUP_TIMER
-        bne +
-        jmp DRAW_HUD
-+       rts
+; (POPUP_TICK moved to the $2C00 segment to make room here.)
 
 ; ============================================================================
 ; WAIT FOR FRAME (Vertical blank sync)
@@ -1001,22 +994,19 @@ SHOW_TITLE:
         lda #COL_BLACK
         sta VIC_BORDER
 
-        ; Arm attract mode: reset idle timer, swallow any held-over fire
-        lda #0
-        sta ATTRACT_TIMER
+        ; Arm attract mode: swallow held-over fire, reset the idle timer
         lda #1
         sta ATTRACT_PREV_FIRE
+        lsr                     ; A = 0
+        sta ATTRACT_TIMER
         rts
 
 UPDATE_TITLE:
-        ; Keep border black
-        lda #COL_BLACK
-        sta VIC_BORDER
-
         ; Fire (fresh press) starts a game; ~10s idle flips to the high scores
+        ; (border is set once by SHOW_TITLE; nothing changes it here)
         jsr ATTRACT_TICK
         bcc @no
-        jsr START_NEW_GAME
+        jmp START_NEW_GAME
 @no:    rts
 
 ; ============================================================================
@@ -1071,11 +1061,10 @@ INIT_LEVEL:
         jsr DRAW_PLAYFIELD
 
         ; Player starts on left border, middle
-        lda #FIELD_LEFT
-        sta PLAYER_X
         lda #13
         sta PLAYER_Y
-        lda #1
+        lda #FIELD_LEFT         ; = 1, doubles as the on-edge flag
+        sta PLAYER_X
         sta PLAYER_ON_EDGE
 
         ; Qix starts in center
@@ -1085,7 +1074,6 @@ INIT_LEVEL:
         sta QIX_Y
         lda #1
         sta QIX_DX
-        lda #1
         sta QIX_DY
         lda #60
         sta QIX_TIMER
@@ -1445,23 +1433,39 @@ BYTE_TO_DEC:
 ; ============================================================================
 
 CLEAR_SCREEN:
-        lda #$20
         ldx #0
-@loop:  sta SCREEN_RAM, x
+@loop:  lda #$20
+        sta SCREEN_RAM, x
         sta SCREEN_RAM + $100, x
         sta SCREEN_RAM + $200, x
         sta SCREEN_RAM + $2E8, x
-        dex
-        bne @loop
-
         lda #COL_LBLUE
-        ldx #0
-@col:   sta COLOR_RAM, x
+        sta COLOR_RAM, x
         sta COLOR_RAM + $100, x
         sta COLOR_RAM + $200, x
         sta COLOR_RAM + $2E8, x
         dex
-        bne @col
+        bne @loop
+        rts
+
+; Banked background-reveal calls (module under the BASIC ROM):
+; C=0 -> PREP_K (level start: paint interior, stash, ghost - display blanked)
+; C=1 -> REVEAL_K (restore one claimed cell's bitmap+colour; SAVE_X/SAVE_Y)
+; $01 is $37 throughout gameplay (the overlays/charset code save+restore it),
+; so a hardcoded restore is safe here.
+BANKED_BG:
+        sei
+        bcs @rev
+        lda #$36                ; prep: BASIC out, KERNAL stays (the overlays
+        sta $01                 ; cli internally, so the KERNAL must be in)
+        jsr PREP_K
+        jmp @out
+@rev:   lda #$35                ; reveal: BASIC + KERNAL out (stage reads at
+        sta $01                 ; $E000), IO in; sei held for the whole call
+        jsr REVEAL_K
+@out:   lda #$37
+        sta $01
+        cli
         rts
 
 ; ============================================================================
@@ -4327,11 +4331,11 @@ SHOW_HISCORE_TABLE:
         lda #$16
         sta VIC_MEMPTR
 
-        ; Arm attract mode: reset idle timer, swallow any held-over fire
-        lda #0
-        sta ATTRACT_TIMER
+        ; Arm attract mode: swallow held-over fire, reset the idle timer
         lda #1
         sta ATTRACT_PREV_FIRE
+        lsr                     ; A = 0
+        sta ATTRACT_TIMER
         rts
 
 ; Helper: draw byte (0-99) as 2 decimal digits (Y = screen offset, preserves X)
@@ -4392,7 +4396,7 @@ UPDATE_HISCORE_SHOW:
         ; flips back to the title (ATTRACT_TICK handles both).
         jsr ATTRACT_TICK
         bcc @done
-        jsr START_NEW_GAME
+        jmp START_NEW_GAME
 @done:  rts
 
 ; Save high scores to disk
@@ -4735,6 +4739,8 @@ INIT_MUSIC:
 ; INIT_CHARSET never touches - so the gameplay code below stays under $2000.
 ; All of these are reached via JSR/JMP by label, so their absolute location
 ; does not matter. Keep the running total below SPRITE_RAM ($2800).
+MAIN_END:
+!if MAIN_END > $2000 { !error "main code overflowed into CHARSET_RAM ($2000): ", MAIN_END }
 * = $2460
 
 ; NOTE: SET_QIX_SPEED, SET_SPARX_SPEED, QIX_SPEED_TBL and CHECK_SCORE_LIFE used
@@ -5830,39 +5836,31 @@ DRAW_SPARX3_SPRITE:
 
 SPARX3_COLORS: !byte COL_YELLOW, COL_WHITE, COL_GREEN
 
-; ============================================================================
-; PAINT LEVEL INTERIOR
-; ============================================================================
-; Fills the playfield interior for the current level. Called by UPDATE_INTRO
-; when the level-intro card times out (which also wipes the card - every
-; interior cell is repainted). The frame/HUD were already drawn by INIT_LEVEL.
+; (PAINT_LEVEL_INTERIOR moved to the under-BASIC reveal module - it is only
+; called from PREP_K there, and this segment sits exactly at its $3880 cap.
+; It also gained the photo-level cadence: every 3rd level is a photo level.)
 
-PAINT_LEVEL_INTERIOR:
-        ; Rotate the three background images across ALL levels, by LEVEL mod 3:
-        ;   1 -> level-2 image  (levels 1, 4, 7, ...)
-        ;   2 -> level-4 image  (levels 2, 5, 8, ...)
-        ;   0 -> level-10 image (levels 3, 6, 9, ...)
-        ; Each overlay fully repaints every interior cell's bitmap AND colour
-        ; RAM, so the previous contents are completely overwritten.
-        lda LEVEL
-        cmp #1
-        beq @starfield          ; level 1 -> faint starfield, not a photo
-@mod3:  cmp #3
-        bcc @have               ; A < 3 -> remainder in A
-        sbc #3                  ; carry set by cmp (A>=3) -> exact subtract
-        bcs @mod3               ; carry still set -> keep reducing
-@have:
-        cmp #1
-        beq @bg2
-        cmp #2
-        beq @bg4
-        jmp DECOMPRESS_LEVEL10_BG   ; remainder 0 -> tail-call (ends in rts)
-@bg2:
-        jmp OVERLAY_LEVEL2_BG
-@bg4:
-        jmp OVERLAY_LEVEL4_BG
-@starfield:
-        jmp DRAW_STARFIELD          ; tail-call (ends in rts)
+; Score-popup countdown: when the readout's timer expires, one HUD redraw
+; (buffer rebuilt with POPUP_TIMER = 0) erases it from the panel.
+POPUP_TICK:
+        lda POPUP_TIMER
+        beq +
+        dec POPUP_TIMER
+        bne +
+        jmp DRAW_HUD
++       rts
+
+; During the level-done celebration on photo levels the banner is deferred
+; (REVEALALL_K stretched the timer) so the finished picture shows clean;
+; draw the banner when the hold expires. Called each state-3 frame.
+LEVEL_DONE_TICK:
+        lda PHOTO_LEVEL
+        beq +
+        lda DEATH_TIMER
+        cmp #120
+        bne +
+        jmp DRAW_CLEAR_CARD
++       rts
 
 ; ============================================================================
 ; OVERLAY LEVEL 2 BACKGROUND
@@ -8023,7 +8021,11 @@ DRAW_FILL_BAR:
 ;                     over the darker CLAIM_COLORS_BG partner
 ; Tail-calls SET_BITMAP_COLOR, so it returns to the caller.
 PAINT_CLAIM_BITMAP:
-        lda CLAIM_SCORE_STEP
+        lda PHOTO_LEVEL
+        beq @tex                ; starfield levels keep the material textures
+        sec
+        jmp BANKED_BG           ; photo levels: reveal the cell's true image
+@tex:   lda CLAIM_SCORE_STEP
         cmp #2
         beq @slow
 
@@ -8157,7 +8159,10 @@ PROBE_DIR:
 ; music bass envelope/waveform, so nothing has to be restored afterwards.
 ; ----------------------------------------------------------------------------
 START_LEVEL_UP_FANFARE:
-        jsr DRAW_CLEAR_CARD     ; banner over the frozen field (both clear paths)
+        jsr REVEAL_ALL          ; payoff: image floods the field; on photo
+                                ; levels this extends the timer and DEFERS the
+                                ; banner so the picture shows clean first
+                                ; (starfield levels get the banner right away)
         lda #0
         sta MUSIC_ENABLED       ; pause the music engine for the fanfare
         sta SID_CTRL2           ; silence voice 2 (lead) - gate off
@@ -9363,7 +9368,9 @@ BEGIN_LEVEL:
 UPDATE_INTRO:
         dec DEATH_TIMER
         bne @hold
-        jsr PAINT_LEVEL_INTERIOR
+        clc
+        jsr BANKED_BG           ; paint interior + stash + ghost, display
+                                ; blanked so the image never flashes visible
         lda CARD_SPR
         sta VIC_SPRITE_EN
         lda #1
@@ -9502,6 +9509,18 @@ BOLD_DIGITS:
 LIFE_ICON:
         !byte $10,$38,$7C,$FE,$7C,$38,$10,$00
 
+; Level-complete payoff: flood the field with the finished image (banked
+; call into REVEALALL_K under the BASIC ROM; no-op on level 1).
+REVEAL_ALL:
+        sei
+        lda #$35                ; BASIC + KERNAL out (stage reads), IO in;
+        sta $01                 ; sei held throughout - no IRQ sans KERNAL
+        jsr REVEALALL_K
+        lda #$37
+        sta $01
+        cli
+        rts
+
 ; ============================================================================
 ; PLAYER GLOW HALO (sprite 7)
 ; ----------------------------------------------------------------------------
@@ -9616,6 +9635,282 @@ INSTALL_HALO_SPRITES:
         rts
 
 !if * > $D000 { !error "HUD styling module overflowed into I/O ($D000): ", * }
+
+; ============================================================================
+; BACKGROUND REVEAL (levels 2+) - module under the BASIC ROM
+; ----------------------------------------------------------------------------
+; Volfied-style: the level image is painted normally by the overlay, then
+; STASH_K copies every interior cell (8 bitmap bytes + colour) to the stages
+; and ghosts the field (dark grey over black, $B0) - the image shows as a dim
+; monochrome preview. Claiming a cell calls REVEAL_K, which restores BOTH the
+; bitmap and the colour from the stages. Restoring the bitmap is essential:
+; the claim pipeline's capture flash paints each cell solid $FF first, and
+; anything the trail/fuse scribbled is healed by the same restore.
+; Entered only through the BANKED_BG / REVEAL_ALL stubs: prep runs at $01=$36
+; (KERNAL in - the overlays cli internally), reveals at $01=$35 with sei held
+; (stage reads at $E000 need the KERNAL out; stage WRITES go through the ROM
+; with any banking). The level-4 image data ends at $BE5C; this code sits in
+; the remaining gap below $C000, and the stages in RAM under the KERNAL.
+; ============================================================================
+; The code sits in the true gap between the end of the level-4 image data
+; ($BE5C) and the BASIC ROM window end. The STAGES live in RAM under the
+; KERNAL: stores write through the ROM with any banking, and the reveal
+; paths read them under $01=$35 (BASIC+KERNAL out, IO in) inside their
+; stubs' sei window, so no interrupt can ever fire with the KERNAL absent.
+!if LEVEL4_SCREEN + 684 > $BE6C { !error "level-4 image data grew into the reveal module" }
+* = $BE6C
+
+BITMAP_STAGE = $E000            ; 684 cells x 8 bytes = $E000-$F55F
+COLOR_STAGE  = $F560            ; 684 colour bytes    = $F560-$F80B
+
+; Shared walkers for the stash/reveal passes:
+; ADV_ROW: colour walkers - screen (TEMP1/2) += 40, stage (SCREEN_LO/HI) += 36
+ADV_ROW:
+        lda TEMP1
+        clc
+        adc #40
+        sta TEMP1
+        bcc +
+        inc TEMP2
++       lda SCREEN_LO
+        clc
+        adc #36
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       rts
+
+; BROW_ADDR: TEMP1/2 = interior start of bitmap char row X (BITMAP_ROW[x]+16)
+BROW_ADDR:
+        lda BITMAP_ROW_LO, x
+        clc
+        adc #16
+        sta TEMP1
+        lda BITMAP_ROW_HI, x
+        adc #0
+        sta TEMP2
+        rts
+
+; Fill the playfield interior for the current level and set PHOTO_LEVEL.
+; Every 3rd level (3, 6, 9, ...) is a photo level: one of the three images,
+; rotated by LEVEL mod 9 (3 -> level-2 image, 6 -> level-4 image, 0 -> the
+; RLE level-10 image). All other levels get the starfield, and their claims
+; keep the classic material textures. Each painter fully repaints every
+; interior cell, wiping the intro card. Runs banked (called from PREP_K).
+PAINT_LEVEL_INTERIOR:
+        lda #0
+        sta PHOTO_LEVEL
+        lda LEVEL
+@mod3:  cmp #3
+        bcc +
+        sbc #3                  ; carry set by cmp (A>=3) -> exact subtract
+        bcs @mod3               ; always taken
++       tax                     ; re-test A - the loop exits on CMP flags!
+        bne @starfield          ; remainder 1 or 2 -> a starfield level
+        inc PHOTO_LEVEL
+        lda LEVEL
+@mod9:  cmp #9
+        bcc +
+        sbc #9
+        bcs @mod9               ; always taken
++       tax                     ; ditto
+        beq @bg10               ; 9, 18, ... -> level-10 image
+        cmp #3
+        beq @bg2                ; 3, 12, ... -> level-2 image
+        jmp OVERLAY_LEVEL4_BG   ; 6, 15, ... -> level-4 image
+@bg2:   jmp OVERLAY_LEVEL2_BG
+@bg10:  jmp DECOMPRESS_LEVEL10_BG
+@starfield:
+        jmp DRAW_STARFIELD
+
+; Level-start interior prep, run with the display BLANKED so the image is
+; never visible un-ghosted: paint the interior (overlay or starfield), then
+; stash + ghost it. The overlays' own $01 save/restore nests cleanly inside
+; our $36 banking, and the KERNAL stays in, so their cli is safe too.
+PREP_K:
+        lda #COL_BLACK          ; the level-done pulse may have left the
+        sta VIC_BORDER          ; border coloured - blank to clean black
+        lda VIC_CTRL1
+        and #$EF                ; display off (screen shows border only)
+        sta VIC_CTRL1
+        jsr PAINT_LEVEL_INTERIOR
+        jsr STASH_K
+        lda VIC_CTRL1
+        ora #$10                ; display on: the field is already ghosted
+        sta VIC_CTRL1
+        rts
+
+; Stash the freshly painted image (bitmap + colours) and ghost the interior.
+; No-op on starfield levels.
+STASH_K:
+        lda PHOTO_LEVEL
+        bne +
+        rts
++       ; --- pass 1: colours -> COLOR_STAGE, screen colours -> ghost $B0 ---
+        lda #<(GAMEPLAY_SCREEN + 4*40)
+        sta TEMP1               ; screen-colour row walker
+        lda #>(GAMEPLAY_SCREEN + 4*40)
+        sta TEMP2
+        lda #<(COLOR_STAGE - 2)
+        sta SCREEN_LO           ; stage base, offset so the shared Y (2-37)
+        lda #>(COLOR_STAGE - 2) ; indexes stage slots 0-35
+        sta SCREEN_HI
+        ldx #19                 ; interior rows 4-22
+@crow:  ldy #2                  ; interior cols 2-37
+@ccol:  lda (TEMP1), y          ; the image colour the overlay just wrote
+        sta (SCREEN_LO), y      ; stage it
+        lda #$B0                ; ghost: dark grey ink over black
+        sta (TEMP1), y
+        iny
+        cpy #38
+        bne @ccol
+        jsr ADV_ROW
+        dex
+        bne @crow
+        ; --- pass 2: bitmap rows -> BITMAP_STAGE (288 bytes per char row) ---
+        lda #<BITMAP_STAGE
+        sta SCREEN_LO
+        lda #>BITMAP_STAGE
+        sta SCREEN_HI
+        ldx #4                  ; char rows 4-22
+@brow:  jsr BROW_ADDR
+        ldy #0
+@b1:    lda (TEMP1), y          ; first 256 of the row's 288 bytes
+        sta (SCREEN_LO), y
+        iny
+        bne @b1
+        inc TEMP2
+        inc SCREEN_HI
+@b2:    lda (TEMP1), y          ; remaining 32
+        sta (SCREEN_LO), y
+        iny
+        cpy #32
+        bne @b2
+        lda SCREEN_LO           ; stage += 32 (256 came via the page bump)
+        clc
+        adc #32
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       inx
+        cpx #23
+        bne @brow
+        rts
+
+; Level-complete payoff: flood the whole interior with the finished image
+; by running the per-cell reveal over every interior cell (sweeps across the
+; field in a few frames). Runs under the banner card, which draws after us.
+; No-op on starfield levels.
+REVEALALL_K:
+        lda PHOTO_LEVEL
+        bne @photo
+        jmp DRAW_CLEAR_CARD     ; starfield level: banner immediately
+                                ; (visible RAM - callable while banked)
+@photo: lda #220                ; hold the clean picture ~2s; the banner (and
+        sta DEATH_TIMER         ; the fanfare's first note) arrive at 120
+        lda #4
+        sta SAVE_Y
+@row:   lda #2
+        sta SAVE_X
+@col:   jsr REVEAL_K
+        inc SAVE_X
+        lda SAVE_X
+        cmp #38
+        bne @col
+        inc SAVE_Y
+        lda SAVE_Y
+        cmp #23
+        bne @row
+        rts
+
+; Restore the claimed cell at SAVE_X/SAVE_Y: 8 bitmap bytes + true colour.
+REVEAL_K:
+        ; stage index = (SAVE_Y-4)*36 + (SAVE_X-2), kept in TEMP4:TEMP3
+        lda SAVE_Y
+        sec
+        sbc #4
+        sta TEMP1               ; r = 0-18
+        lsr
+        lsr
+        lsr
+        sta TEMP4               ; hi byte of r*32
+        lda TEMP1
+        asl
+        asl
+        asl
+        asl
+        asl                     ; lo byte of r*32
+        sta TEMP3
+        lda TEMP1
+        asl
+        asl                     ; r*4 (<= 72, no carry)
+        clc
+        adc TEMP3
+        sta TEMP3
+        bcc +
+        inc TEMP4
++       lda SAVE_X
+        sec
+        sbc #2                  ; column 0-35
+        clc
+        adc TEMP3
+        sta TEMP3
+        bcc +
+        inc TEMP4
++       ; colour stage pointer = COLOR_STAGE + idx (16-bit add; not page-aligned)
+        lda TEMP3
+        clc
+        adc #<COLOR_STAGE
+        sta TEMP1
+        lda TEMP4
+        adc #>COLOR_STAGE
+        sta TEMP2
+        ldy #0
+        lda (TEMP1), y          ; the cell's true colour
+        pha
+        ; bitmap stage pointer = BITMAP_STAGE + idx*8 (16-bit add)
+        asl TEMP3
+        rol TEMP4
+        asl TEMP3
+        rol TEMP4
+        asl TEMP3
+        rol TEMP4
+        lda TEMP3
+        clc
+        adc #<BITMAP_STAGE
+        sta TEMP1
+        lda TEMP4
+        adc #>BITMAP_STAGE
+        sta TEMP2
+        ; bitmap dest = BITMAP_ROW[SAVE_Y] + SAVE_X*8
+        ldx SAVE_Y
+        lda BITMAP_ROW_LO, x
+        sta SCREEN_LO
+        lda BITMAP_ROW_HI, x
+        sta SCREEN_HI
+        lda SAVE_X
+        asl
+        asl
+        asl
+        bcc +
+        inc SCREEN_HI
++       clc
+        adc SCREEN_LO
+        sta SCREEN_LO
+        bcc +
+        inc SCREEN_HI
++       ldy #7
+@copy:  lda (TEMP1), y
+        sta (SCREEN_LO), y
+        dey
+        bpl @copy
+        pla                     ; the staged colour
+        ldx SAVE_X
+        ldy SAVE_Y
+        jmp SET_BITMAP_COLOR    ; visible RAM; returns to the BANKED_BG stub
+
+!if * > $C000 { !error "reveal module overflowed past the BASIC ROM window ($C000): ", * }
+!if COLOR_STAGE + 684 > $FFFA { !error "colour stage overlaps the CPU vectors" }
 
 ; ============================================================================
 ; END
