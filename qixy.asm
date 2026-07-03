@@ -436,8 +436,9 @@ MAIN_LOOP:
         ; Cheat: C key instantly completes the current level
         jsr CHECK_CHEAT_KEY
 
-        ; Award a score-based extra life every 5000 points
-        jsr CHECK_SCORE_LIFE
+        ; Extra life every 5000 points + the level countdown timer (bundled
+        ; into one call: the branch targets below are at the edge of range)
+        jsr SCORE_LIFE_AND_TIMER
 
         ; Process fill incrementally if active (small work per frame)
         lda FILL_STATE
@@ -1108,7 +1109,7 @@ INIT_LEVEL:
         sta FILL_STATE
         sta MOVE_DIR            ; no committed travel direction yet
 
-        jsr DRAW_HUD
+        jsr RESET_TIMER_HUD     ; restart the level countdown + draw HUD
         rts
 
 ; ============================================================================
@@ -3180,7 +3181,7 @@ UPDATE_DYING:
         lda #60             ; 1 second grace period after respawn
         sta GRACE_TIMER
 
-        jsr UPDATE_HUD
+        jsr RESET_TIMER_HUD ; fresh 60s countdown + HUD redraw
         rts
 
 @burst: jmp DEATH_BURST_FRAME
@@ -5538,6 +5539,10 @@ FILL_TXT:
         !scr "fill: "
         !byte 0
 
+TIME_TXT:
+        !scr "time:"
+        !byte 0
+
 ; (GAMEOVER_TXT / PAUSED_TXT moved to the $CC00 presentation module - they are
 ; drawn into the bitmap now, and this segment is nearly full.)
 
@@ -6807,6 +6812,19 @@ UPDATE_HUD_BUF:
         stx HUD_BUF + 35
         sty HUD_BUF + 36
 
+        ; "TIME:" at col 14, countdown digits at col 20-21 (level timer)
+        ldx #0
+@tm:    lda TIME_TXT, x
+        beq @tm_done
+        sta HUD_BUF + 14, x
+        inx
+        bne @tm
+@tm_done:
+        lda TIME_LEFT
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 20
+        sty HUD_BUF + 21
+
         ; Row 1: "LIVES: " at col 0 (offset +40)
         ldx #0
 @li:    lda LIVES_TXT, x
@@ -6862,6 +6880,7 @@ UPDATE_HUD_BUF:
         sta HUD_COLOR, x
         dex
         bpl @bg
+        jsr TIMER_HUD_COLOR_SET     ; timer digits: LED inset, red when low
         jmp HUD_STYLE_COLORS        ; digit fields as black LED insets (tail-call)
 
 ; Draw HUD_BUF to bitmap (rows 0-1, cols 0-39)
@@ -6886,6 +6905,38 @@ DRAW_HUD_BITMAP:
         cpx #40
         bne @loop2
         jmp DRAW_FILL_BAR       ; progress bar in row 2 (tail-call, then rts)
+
+; Level-timer digit colours: black LED inset like the other HUD read-outs,
+; white normally, red once 10 seconds or less remain. Runs AFTER the panel
+; tint (bg nibble must stay 0). Returns the colour in A; preserves X/Y.
+TIMER_HUD_COLOR_SET:
+        lda TIME_LEFT
+        cmp #11                     ; C set = 11+ seconds left
+        lda #$10                    ; white on black
+        bcs +
+        lda #$20                    ; red on black: hurry!
++       sta HUD_COLOR + 20
+        sta HUD_COLOR + 21
+        rts
+
+; Redraw only the two countdown digits in the bitmap (called on each 1-second
+; tick by UPDATE_TIMER - a full HUD rebuild every second would be too dear).
+DRAW_TIMER:
+        lda TIME_LEFT
+        jsr BYTE_TO_DEC
+        stx HUD_BUF + 20
+        sty HUD_BUF + 21
+        ldx #20                     ; column
+        ldy #0                      ; row
+        lda HUD_BUF + 20
+        jsr DRAW_HUD_GLYPH
+        jsr TIMER_HUD_COLOR_SET
+        jsr SET_BITMAP_COLOR
+        inx
+        lda HUD_BUF + 21
+        jsr DRAW_HUD_GLYPH
+        jsr TIMER_HUD_COLOR_SET
+        jmp SET_BITMAP_COLOR
 
 ; Draw pixel-precise trail in bitmap cell
 ; X = char column, Y = char row
@@ -9103,6 +9154,59 @@ HS_S_NTSC:  !scr "NTSC"
             !byte 0
 HS_S_PAL:   !scr "PAL"
             !byte 0
+
+; ----------------------------------------------------------------------------
+; LEVEL COUNTDOWN TIMER (in the tail of this zero-fill module, below $C5F0)
+; ----------------------------------------------------------------------------
+; 60 seconds to clear the level or lose a life. Ticks once per playing frame
+; (UPDATE_TIMER from the main loop, so pause/death/intro freeze it); a second
+; is 50 frames on PAL, 60 on NTSC (VIDEO_STD lives in this module). Reset to
+; 60s by INIT_LEVEL and on respawn via RESET_TIMER_HUD. The read-out is
+; "TIME: NN" in HUD row 0; only the two digits are redrawn on each tick
+; (DRAW_TIMER, $2C00 segment).
+TIMER_SECONDS = 60
+
+TIME_LEFT:  !byte 0             ; seconds remaining
+TIME_SUB:   !byte 0             ; frames until the next 1-second tick
+
+; Reload the frames-per-second sub counter (PAL 50 / NTSC 60)
+TIMER_RELOAD_SUB:
+        ldx #50
+        lda VIDEO_STD
+        bne +                   ; 1 = PAL
+        ldx #60
++       stx TIME_SUB
+        rts
+
+; Restart the countdown and redraw the whole HUD (level start / respawn)
+RESET_TIMER_HUD:
+        lda #TIMER_SECONDS
+        sta TIME_LEFT
+        jsr TIMER_RELOAD_SUB
+        jmp UPDATE_HUD
+
+; Main-loop trampoline: extra-life check, then the countdown tick (keeps the
+; @playing block small - its state-dispatch branches are at the edge of range)
+SCORE_LIFE_AND_TIMER:
+        jsr CHECK_SCORE_LIFE
+        ; fall through to UPDATE_TIMER
+
+; Once per playing frame: count a second, redraw the digits, kill at zero
+UPDATE_TIMER:
+        dec TIME_SUB
+        bne @done
+        jsr TIMER_RELOAD_SUB
+        lda TIME_LEFT
+        beq @done               ; safety: already expired
+        dec TIME_LEFT
+        bne @draw
+        jsr DRAW_TIMER          ; show the 00 before the death burst
+        jmp PLAYER_DEATH        ; time's up - costs a life
+@draw:  jmp DRAW_TIMER
+@done:  rts
+
+SEGC320_END:
+!if SEGC320_END > $C5F0 { !error "$C320 module overflowed into QIX_SPEED ($C5F0): ", SEGC320_END }
 
 ; ============================================================================
 ; LEVEL 10 BACKGROUND BITMAP DATA (RLE-compressed, decompressed at level start)
