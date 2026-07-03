@@ -1274,9 +1274,13 @@ DRAW_TRAIL_TILE:
         lda #COL_PINK           ; Neon pink trail
         sta (COLOR_LO), y
 
-        ; Draw pixel-precise trail in bitmap
+        ; Draw pixel-precise trail in bitmap. Clear the cell first: PLOT_PIXEL
+        ; ORs, and on photo levels the ghost image's pixels would all turn
+        ; trail-pink (one fg colour per hires cell), fattening the thin line
+        ; into a blotch. REVEAL_K/CLEAR_TRAIL repaint the cell later anyway.
         ldx SAVE_X
         ldy SAVE_Y
+        jsr CLEAR_BITMAP_CELL   ; preserves X/Y
         jsr DRAW_TRAIL_BITMAP
 
         ; Set bitmap cell color to neon pink
