@@ -3215,8 +3215,13 @@ CLEAR_TRAIL:
 ; ============================================================================
 
 UPDATE_SPRITES:
-        ; Clear MSB register
-        lda #0
+        ; Clear MSB register - but keep bit 6: the death burst (sprite 6) is
+        ; positioned once by START_DEATH_BURST, and this routine still runs on
+        ; the death frame itself (PLAYER_DEATH returns into the playing frame),
+        ; so a blind clear dropped the burst's 9th X bit -> exploded on the
+        ; right, burst rendered 256px left.
+        lda VIC_SPRITE_MSB
+        and #$40
         sta VIC_SPRITE_MSB
 
         ; Player sprite (sprite 0)
@@ -4306,13 +4311,24 @@ SHOW_HISCORE_TABLE:
         dex
         bne @conv_loop
 
-        ; Draw copyright text in lowercase (screen codes $01-$1A = lowercase in lowercase charset)
+        ; Draw version line centred on row 21 ("v0.99" = 5 chars -> col 17)
+        ldx #0
+@ver:   lda HSTABLE_VER, x
+        beq @ver_done
+        sta SCREEN_RAM + 857, x
+        lda #COL_DGREY
+        sta COLOR_RAM + 857, x
+        inx
+        bne @ver
+@ver_done:
+
+        ; Draw copyright text centred on row 22 (18 chars -> col 11)
         ldx #0
 @copy:  lda HSTABLE_COPY, x
         beq @copy_done
-        sta SCREEN_RAM + 888, x
+        sta SCREEN_RAM + 891, x
         lda #COL_DGREY
-        sta COLOR_RAM + 888, x
+        sta COLOR_RAM + 891, x
         inx
         bne @copy
 @copy_done:
@@ -4554,6 +4570,10 @@ HSTABLE_HDR:
 
 HSTABLE_PROMPT:
         !scr "fire=continue  f1=save"
+        !byte 0
+
+HSTABLE_VER:
+        !scr "v0.99"
         !byte 0
 
 HSTABLE_COPY:
