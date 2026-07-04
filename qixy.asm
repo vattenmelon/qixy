@@ -8225,6 +8225,9 @@ PROBE_DIR:
 ; music bass envelope/waveform, so nothing has to be restored afterwards.
 ; ----------------------------------------------------------------------------
 START_LEVEL_UP_FANFARE:
+        lda #0
+        sta VIC_SPRITE_EN       ; hide sprites so they don't sit over the
+                                ; reveal / banner (restored by BEGIN_LEVEL)
         jsr REVEAL_ALL          ; payoff: image floods the field; on photo
                                 ; levels this extends the timer and DEFERS the
                                 ; banner so the picture shows clean first
@@ -9508,6 +9511,8 @@ BEGIN_LEVEL:
         jsr CLEAR_GAMEPLAY_BITMAP
         jsr INIT_LEVEL          ; frame + HUD + entity init (interior stays black)
         lda VIC_SPRITE_EN
+        ora #%10001111          ; base 4 + halo (the level-clear path blanked
+                                ; $D015, so the register alone is not enough)
         sta CARD_SPR            ; INIT_QIX2/INIT_SPARX3 just set this level's bits
         lda #0
         sta VIC_SPRITE_EN
