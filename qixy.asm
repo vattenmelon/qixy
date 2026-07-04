@@ -109,7 +109,7 @@ MUSIC_POS       = $39       ; Position in pattern (0-31)
 BASS_NOTE       = $3A       ; Current bass note index
 LEAD_NOTE       = $3B       ; Current lead note index
 ARP_NOTE        = $3C       ; Current arpeggio note
-ARP_POS         = $3D       ; Arpeggio position (0-2)
+PWM_PHASE       = $3D       ; Bass pulse-width sweep phase (was ARP_POS, dead)
 MUSIC_ENABLED   = $3E       ; 1 = music playing, 0 = stopped
 MUSIC_MODE      = $41       ; 0 = normal, 1 = sad (game over)
 PAUSED          = $42       ; 1 = game paused, 0 = running
@@ -4700,8 +4700,9 @@ RANDOM:
 ; SYNTH-POP HEARTBREAK MUSIC ENGINE
 ; ============================================================================
 ; "Claiming On My Own" - borrows heavily from Robyn's "Dancing On My Own":
-; the vi-IV-I-V loop (here C#m/A/E/B) at ~115 BPM, four-on-the-floor with
-; offbeat hats and a dead-flat pumping straight-8ths pulse bass. Purely
+; the vi-IV-I-V loop (here C#m/A/E/B) at 125 BPM, four-on-the-floor with
+; offbeat hats and a pumping straight-8ths pulse bass whose pulse width is
+; swept every frame (MUSIC_PWM - the classic SID analogue swim). Purely
 ; instrumental - no melody voice, just the hypnotic groove the record opens
 ; on. Big lights, empty dance floor, keep cutting.
 
@@ -4713,19 +4714,20 @@ INIT_MUSIC:
         sta BASS_NOTE
         sta LEAD_NOTE
         sta ARP_NOTE
-        sta ARP_POS
+        sta PWM_PHASE
         sta MUSIC_MODE          ; Normal music mode
         lda #1
         sta MUSIC_ENABLED
 
-        ; Voice 1: Pumping synth-pop bass - round ~40% pulse (the original's
-        ; rubbery analogue bass, not a buzzy saw). The engine chops the gate
-        ; on every odd 16th, so give it a short release tail that breathes
-        ; into the gap instead of cutting dead.
-        lda #$80
+        ; Voice 1: Pumping synth-pop bass - rubbery analogue pulse, not a
+        ; buzzy saw. The engine chops the gate on every odd 16th, so give it
+        ; a short release tail that breathes into the gap instead of cutting
+        ; dead. The PW set here is only the pre-first-frame value: MUSIC_PWM
+        ; rewrites it every frame, sweeping 50%..75% duty.
+        lda #$00
         sta SID_PW_LO1
-        lda #$06
-        sta SID_PW_HI1      ; PW $0680 ~ 41% - dark and round
+        lda #$08
+        sta SID_PW_HI1      ; 50% square - the sweep's base point
         lda #$08            ; Attack=0, Decay=8 - punchy front
         sta SID_AD1
         lda #$B5            ; Sustain=B, Release=5 - full body, pumping tail
@@ -4786,16 +4788,17 @@ UPDATE_MUSIC:
         beq @normal_music
         jmp UPDATE_SAD_MUSIC
 @normal_music:
-        ; Tempo: 16th steps alternate 6 and 7 frames (PAL) so each 8th-note
-        ; pair is exactly 13 frames = 260 ms -> 115.4 BPM, right at the
-        ; original's ~117. The 8th grid stays machine-straight; only the
-        ; inaudible internal chop point shifts. 64 steps = 4 bars of 4/4.
+        ; Bass pulse-width sweep runs every frame, not just on steps. The
+        ; extra inc here doubles the phase rate (2/frame -> full triangle
+        ; cycle ~2.6 s PAL). Routine lives in the $C305 sliver.
+        inc PWM_PHASE
+        jsr MUSIC_PWM
+        ; Tempo: straight 6 frames per 16th (PAL) -> 8ths at 12 frames
+        ; = 240 ms -> 125 BPM, a notch up from the old 115.4 (which
+        ; alternated 6/7-frame 16ths). 64 steps = 4 bars of 4/4.
         inc MUSIC_TIMER
-        lda MUSIC_POS
-        lsr                 ; carry = parity of the step about to play
-        lda #0
-        adc #6              ; 6 or 7 frames for this 16th
-        cmp MUSIC_TIMER
+        lda MUSIC_TIMER
+        cmp #6
         beq @step
         rts
 @step:
@@ -4977,7 +4980,7 @@ INIT_SAD_MUSIC:
         sta BASS_NOTE
         sta LEAD_NOTE
         sta ARP_NOTE
-        sta ARP_POS
+        sta PWM_PHASE
         lda #1
         sta MUSIC_MODE          ; Sad music mode
         sta MUSIC_ENABLED
@@ -8843,6 +8846,41 @@ SEG3B00_END:
 ;
 ; MACHINE_TYPE: 0=C64  1=C128  2=Ultimate 64  3=Ultimate-II+  4=Ultimate (?)
 ; ============================================================================
+
+; ----------------------------------------------------------------------------
+; MUSIC_PWM - pulse-width modulation sweep on the voice-1 synth bass
+; ----------------------------------------------------------------------------
+; Called every frame from UPDATE_MUSIC (normal mode only; the caller bumps
+; PWM_PHASE once more, so the phase runs at 2/frame). The phase is folded to
+; a 0..$7F triangle and mapped to PW = $0800 + folded*8, sweeping the duty
+; cycle 50%..75% and back every ~2.6 s (PAL) - the classic slow analogue
+; swim. ora #$08 adds the base without a clc (folded*8 high bits are 0..3).
+; Lives in the 27-byte RAM sliver between the level-bg RLE scratch
+; ($C300-$C304) and the machine-detect module ($C320) - every other code
+; block is full, and this routine is EXACTLY 27 bytes: it cannot grow.
+* = $C305
+MUSIC_PWM:
+        inc PWM_PHASE
+        lda PWM_PHASE
+        bpl @nofold
+        eor #$FF            ; fold to a 0..$7F triangle
+@nofold:
+        tay
+        asl
+        asl
+        asl                 ; low byte of folded*8
+        sta SID_PW_LO1
+        tya
+        lsr
+        lsr
+        lsr
+        lsr
+        lsr                 ; high byte of folded*8 (0..3)
+        ora #$08            ; + $0800 base -> PW hi = $08..$0B
+        sta SID_PW_HI1
+        rts
+!if * > $C320 { !error "MUSIC_PWM overflowed into the $C320 module: ", * }
+
 * = $C320
 
 MACHINE_TYPE:   !byte 0         ; 0 = C64, 1 = C128, 2 = Ultimate
