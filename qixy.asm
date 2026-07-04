@@ -461,7 +461,7 @@ MAIN_LOOP:
 @no_grace_dec:
         jsr CHECK_COLLISIONS
         jsr UPDATE_SPRITES
-        jsr ANIMATE_COLORS
+        jsr FADE_TICK           ; volume fade-in tick, falls into ANIMATE_COLORS
         jsr POPUP_TICK          ; score-popup countdown / expiry erase
         jmp MAIN_LOOP
 
@@ -1023,7 +1023,8 @@ UPDATE_TITLE:
 
 START_NEW_GAME:
         ; Switch to hires bitmap mode for gameplay
-        jsr INIT_SPRITES        ; Initialize sprites in Bank 0 first
+        jsr FADE_OUT_START      ; fade music out (the setup below stalls the
+                                ; beat), then falls into INIT_SPRITES
         jsr ENABLE_HIRES_BITMAP_MODE
         jsr CLEAR_GAMEPLAY_BITMAP
         jsr COPY_SPRITES_TO_BANK1
@@ -1057,8 +1058,9 @@ START_NEW_GAME:
         sta TARGET_PERCENT
         jsr SET_QIX_SPEED       ; seed Qix speed from LEVEL (set to 1 above)
 
-        ; Start the Miami Vice beat fresh
-        jsr INIT_MUSIC
+        ; Start the Miami Vice beat fresh - but muted: it runs silently under
+        ; the intro card, then FADE_TICK fades it in once play begins
+        jsr INIT_MUSIC_SILENT
 
         ; Level intro card -> GAME_STATE 7; the interior (starfield/photo) is
         ; painted when the card times out (see UPDATE_INTRO).
@@ -4770,6 +4772,58 @@ INIT_MUSIC:
 ; does not matter. Keep the running total below SPRITE_RAM ($2800).
 MAIN_END:
 !if MAIN_END > $2000 { !error "main code overflowed into CHARSET_RAM ($2000): ", MAIN_END }
+
+; ----------------------------------------------------------------------------
+; TITLE -> LEVEL 1 VOLUME TRANSITION
+; ----------------------------------------------------------------------------
+; Pressing fire on the title kicks off heavy setup (bitmap clear, sprite
+; copies) that stalls UPDATE_MUSIC for several frames - the beat audibly
+; slurred. Instead: FADE_OUT_START sinks the master volume to 0 over 15
+; frames while the title is still up (beat keeps ticking), the fresh beat
+; then runs muted under the level-intro card (INIT_MUSIC_SILENT, in the
+; $2460 block), and FADE_TICK below ramps it back to $0F over ~1.2 s once
+; play begins - which is also how long the spawn grace period lasts.
+;
+; FADE_TICK lives in the 24-byte hole between the end of the runtime charset
+; ($2000 + 137 chars * 8 = $2448 is the first free byte) and the relocated
+; code block at $2460. INIT_CHARSET never writes past $2447.
+* = $2448
+FADE_TICK:
+        ; Front-ends the playing-state ANIMATE_COLORS call (so it only ever
+        ; runs during play): +1 volume step every 4 frames until back at $0F.
+        lda FRAME_COUNT
+        and #$03
+        bne @done
+        lda VOL_CUR
+        cmp #$0F
+        bcs @done
+        adc #1              ; carry known clear (the bcs above)
+        sta VOL_CUR
+        sta SID_VOLUME
+@done:  jmp ANIMATE_COLORS
+!if * > $2460 { !error "FADE_TICK overflowed into the relocated block ($2460): ", * }
+
+; FADE_OUT_START lives in the 24-byte hole between the title screen RAM
+; ($5C00-$5FE7) and the gameplay screen ($6000): past the gameplay bitmap's
+; end ($5F3F), and the VIC fetches exactly 1000 screen bytes, so neither
+; display mode ever touches these bytes.
+* = $5FE8
+FADE_OUT_START:
+        ; Blocking fade on the title/hiscore screen, one volume step per
+        ; frame, keeping the beat ticking as it sinks; then falls into the
+        ; game-start setup it front-ends (START_NEW_GAME's first call).
+        lda #$0E
+@lp:    pha
+        jsr WAIT_FRAME
+        jsr UPDATE_MUSIC
+        pla
+        sta SID_VOLUME
+        sec
+        sbc #1
+        bpl @lp
+        jmp INIT_SPRITES
+!if * > $6000 { !error "FADE_OUT_START overflowed into the gameplay screen ($6000): ", * }
+
 * = $2460
 
 ; NOTE: SET_QIX_SPEED, SET_SPARX_SPEED, QIX_SPEED_TBL and CHECK_SCORE_LIFE used
@@ -5416,6 +5470,16 @@ SPARX_TRAIL_OK:
 @no:    clc                     ; live trail tile -> blocked
         rts
 @yes:   sec
+        rts
+
+INIT_MUSIC_SILENT:
+        ; START_NEW_GAME's beat restart: fresh, but muted (INIT_MUSIC turns
+        ; the volume up to $0F). It runs silently under the level-intro card;
+        ; FADE_TICK ($2448) fades it back in once play begins.
+        jsr INIT_MUSIC
+        lda #0
+        sta SID_VOLUME
+        sta VOL_CUR
         rts
 
 CODE_END_MARKER:  ; Debug: check this address to see available space before $2000
@@ -9362,6 +9426,9 @@ PAUSE_WIDTH   = 10
 PAUSE_BMP     = GAMEPLAY_BITMAP + 12*320 + 15*8     ; row 12, cols 15-24
 PAUSE_COL_RAM = GAMEPLAY_SCREEN + 12*40 + 15
 PAUSE_SAVE     = $033C
+VOL_CUR        = $0396          ; master-volume shadow for the title->level-1
+                                ; fade (cassette buffer byte after PAUSE_SAVE,
+                                ; which ends at $0395)
 PAUSE_SAVE_COL = $038C
 
 ; --- text plumbing ----------------------------------------------------------
