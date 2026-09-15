@@ -1,5 +1,7 @@
 # QIXY - A Modern Qix Clone for Commodore 64
 
+**Project page with screenshots and downloads:** https://vattenmelon.github.io/qixy/
+
 A faithful recreation of the classic arcade game Qix, designed for the Commodore 64 with a modern aesthetic featuring colorful neon graphics and smooth gameplay.
 
 ## Gameplay

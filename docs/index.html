@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QIXY for the Commodore 64</title>
+<meta name="description" content="QIXY: a modern Qix for the Commodore 64 in 6510 assembly. Neon hires playfield, a burning fuse, slow/fast draws, photo levels that reveal a picture as you claim it, SID synth-pop, endless levels. Free download (PRG / D64).">
+<meta property="og:title" content="QIXY for the Commodore 64">
+<meta property="og:description" content="Fence off the playfield while a plasma orb and border-running Sparx hunt you down. A modern Qix in 6510 assembly, with photo levels, a burning fuse and a SID synth-pop soundtrack.">
+<meta property="og:image" content="https://vattenmelon.github.io/qixy/screenshots/title.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="boot" aria-label="Commodore 64 boot screen">
+  <div class="boot-inner">
+    <pre class="boot-text" aria-hidden="true">
+    **** COMMODORE 64 BASIC V2 ****
+
+ 64K RAM SYSTEM  38911 BASIC BYTES FREE
+
+READY.
+LOAD"QIXY",8,1
+
+SEARCHING FOR QIXY
+LOADING
+READY.
+RUN<span class="cursor">&#9608;</span></pre>
+    <div class="hero">
+      <p class="eyebrow">A 6510 assembly game for the Commodore 64</p>
+      <h1>QIXY</h1>
+      <p class="lead">A modern take on Taito's <em>Qix</em>. Fence off the playfield while a plasma orb and border-running Sparx hunt you down &mdash; with a fuse that punishes hesitation, photo levels that develop like a Polaroid as you claim them, endless levels and a synth-pop SID soundtrack.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="qixy.d64" download>Download .D64</a>
+        <a class="btn" href="qixy.prg" download>Download .PRG</a>
+        <a class="btn btn-ghost" href="https://github.com/vattenmelon/qixy">Source on GitHub</a>
+      </div>
+      <p class="fineprint">Runs on a real C64, C128 or Ultimate 64 and in every C64 emulator. <code>LOAD "QIXY",8,1</code> then <code>RUN</code>. Joystick in port 2.</p>
+    </div>
+  </div>
+</header>
+
+<nav class="topnav" aria-label="Sections">
+  <a href="#screens">Screens</a>
+  <a href="#features">Features</a>
+  <a href="#enemies">Enemies</a>
+  <a href="#controls">Controls</a>
+  <a href="#rules">Rules</a>
+  <a href="#run">Run it</a>
+  <a href="#inside">Inside</a>
+</nav>
+
+<main>
+
+<section id="screens" class="section">
+  <h2><span class="tag">01</span> Screens</h2>
+  <p class="section-intro">Every picture below is a straight capture from VICE, scaled with no smoothing &mdash; what you see is what the VIC-II draws.</p>
+
+  <figure class="shot shot-hero">
+    <img src="screenshots/title.png" width="384" height="272" alt="Title screen: a big chrome QIXY logo in a multicolor bitmap, with rockets and explosions around it and CODED BY CLAUDE underneath.">
+    <figcaption><strong>Title screen.</strong> A full-screen multicolor bitmap in VIC bank 1 while the SID plays the synth-pop theme. Fire starts a game; leave it alone for ten seconds and it flips to the high-score table, arcade-cabinet style, and back again.</figcaption>
+  </figure>
+
+  <div class="shot-grid">
+    <figure class="shot">
+      <img src="screenshots/claims.png" width="384" height="272" alt="Level 1 in progress: a blue diagonally woven region on the left and a pink dotted region bottom right have been claimed, the fill reads 47/70%, the plasma-orb Qix drifts near the top and a +22 score popup sits by the player on the right edge.">
+      <figcaption><strong>Two claims in.</strong> The left block was a <em>slow</em> draw &mdash; fire held the whole way &mdash; so it scored double and got the two-tone weave. The lower-right block was a fast dash and got one of the five random materials. <code>FILL 47/70%</code>: the target for level 1 is 70%.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/fuse.png" width="384" height="272" alt="Mid-draw: a pink vertical trail rises from the bottom border to the player's diamond marker; one cell of the trail glows red where the fuse spark is burning up towards the player.">
+      <figcaption><strong>The fuse.</strong> Stop moving mid-line and a spark ignites where your trail began and races up it, one tile every six frames. Here it is a third of the way up. Laying a single new tile snuffs it; standing still means it catches you.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/complete.png" width="384" height="272" alt="Level complete banner over a mostly filled playfield reading LEVEL COMPLETE!, BONUS 1300 and TIME BONUS 460, with the fill at 82/70%.">
+      <figcaption><strong>Level clear.</strong> Finishing at 82% against a 70% target pays <code>(level + overshoot) &times; 100</code> = 1300 points, plus 10 points for every second left on the clock. A big saved-for-last claim is worth planning.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/photo.png" width="384" height="272" alt="Level 3: the playfield is a grey etched ghost of a picture; two claimed regions on the left and lower right show the picture in full colour where it has been revealed.">
+      <figcaption><strong>Photo level.</strong> Every third level hides a picture, ghosted to a dark-grey etching. Each claim develops its part of the image in full colour &mdash; the capture flash resolves into the photograph.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/reveal.png" width="384" height="272" alt="The whole level-3 picture revealed in full colour under a LEVEL COMPLETE! banner.">
+      <figcaption><strong>The payoff.</strong> Clear a photo level and the finished picture floods the whole field under the banner.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/level6.png" width="384" height="272" alt="Level 6 on a ghosted photo: the orange plasma-orb Qix and a green four-pointed plasma star both roam the field while yellow starburst Sparx patrol the border.">
+      <figcaption><strong>Level 6.</strong> A second Qix joins: a spiky plasma star that squashes and stretches as it twinkles. Seal it inside a claim and it explodes.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/level8.png" width="384" height="272" alt="Level 8 on a starfield background with two Qixes near the top left and three Sparx on the border, two of them side by side on the top edge.">
+      <figcaption><strong>Level 8.</strong> A third Sparx starts circling the border the other way. Both enemy speeds keep ramping until level 25 &mdash; the Sparx never outrun you, but they stop being slow.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/intro.png" width="384" height="272" alt="Level intro card on a black playfield: LEVEL 01, TARGET 70%.">
+      <figcaption><strong>Level card.</strong> Each level opens with its number and clear target. The target starts at 70% and climbs two points a level to a 90% cap. Levels are endless.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/gameover.png" width="384" height="272" alt="GAME OVER! in red over a level-1 playfield with one claimed region and two Sparx on the border.">
+      <figcaption><strong>Game over.</strong> Three lives, then the music turns sad. Extra lives come every 5,000 points and for any single claim that covers half the field.</figcaption>
+    </figure>
+    <figure class="shot">
+      <img src="screenshots/hiscore.png" width="384" height="272" alt="High-score table: five names with scores and levels, FIRE=CONTINUE F1=SAVE, version v0.99, 2026 - VATTENMELON, and the detected machine C64 - PAL.">
+      <figcaption><strong>High scores.</strong> Five entries with name, score and level, saved to disk with <kbd>F1</kbd> and reloaded at boot. The last line is what the game detected about your machine &mdash; here <code>C64 - PAL</code>.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="features" class="section">
+  <h2><span class="tag">02</span> Features</h2>
+  <div class="features">
+    <div class="feature">
+      <h3>Slow draw, fast draw</h3>
+      <p>Fire starts a line. Keep it held and you draw at half speed for <strong>double</strong> points and the woven texture; let go and you dash at full speed for normal points. Release even once and the whole claim drops to 1&times;. Every line is a bet.</p>
+    </div>
+    <div class="feature">
+      <h3>The fuse</h3>
+      <p>Hesitate for half a second mid-draw and a spark lights at the base of your trail and burns towards you, a tile every six frames, flickering red and orange over the pink line. Lay any tile to put it out. Once you commit, you're committed.</p>
+    </div>
+    <div class="feature">
+      <h3>Photo levels</h3>
+      <p>Levels 3, 6, 9, 12 and on hide a picture under a grey etching. Claims reveal it piece by piece; clearing the level floods the whole image in. Four pictures rotate &mdash; the fourth is an e-mail about knekkebr&oslash;d, typeset live on the C64 instead of stored as an image.</p>
+    </div>
+    <div class="feature">
+      <h3>Claim textures</h3>
+      <p>On starfield levels every fast claim is filled with a material picked at random &mdash; brick, grid, slats, dots or checkerboard &mdash; in a colour that cycles as the level goes on. Slow claims get the diagonal two-tone weave, so the bonus is visible at a glance.</p>
+    </div>
+    <div class="feature">
+      <h3>Endless, on the clock</h3>
+      <p>Sixty seconds per level, the digits turning red for the last ten. The clear target rises from 70% to a 90% cap, the enemies ramp for 25 levels, and the level counter never wraps. Your run ends when your lives do.</p>
+    </div>
+    <div class="feature">
+      <h3>Bonuses that reward nerve</h3>
+      <p>Clearing pays <code>(level + overshoot) &times; 100</code>, where overshoot is how far past the target you finished, plus 10 points per second left. A spare life every 5,000 points, and an instant one for a single claim of 50% or more.</p>
+    </div>
+    <div class="feature">
+      <h3>SID synth-pop</h3>
+      <p>"Claiming On My Own": a 125 BPM four-on-the-floor groove with offbeat hats and a pulse bass whose width is swept every frame. It fades out when you press fire and back in as level 1 starts; game over gets a slow, sad arrangement.</p>
+    </div>
+    <div class="feature">
+      <h3>Knows your machine</h3>
+      <p>Detects PAL or NTSC, C64 or C128, and an Ultimate 64 or Ultimate-II+ cartridge, and prints the result on the high-score screen. On a C128 the CPU runs at 2 MHz in the border and fills territory several times faster.</p>
+    </div>
+    <div class="feature">
+      <h3>Attract mode &amp; saved scores</h3>
+      <p>The title and the high-score table swap every ten idle seconds. Five high scores with names and levels are kept in a table you can write to disk with <kbd>F1</kbd>; the game reloads it at boot.</p>
+    </div>
+  </div>
+</section>
+
+<section id="enemies" class="section">
+  <h2><span class="tag">03</span> Enemies</h2>
+  <div class="roster">
+    <div class="hazard">
+      <h3>The Qix</h3>
+      <p>A round plasma orb with a spinning white-hot core, bouncing through the unclaimed area and changing direction on a whim. Touching your <em>live</em> trail while you draw costs a life; old, settled lines just bounce it. It is a multicolor sprite &mdash; orange rim, white core, a body colour that cycles.</p>
+    </div>
+    <div class="hazard">
+      <h3>The plasma star</h3>
+      <p>From level 6, a second Qix: a spiky four-pointed star that stretches tall, then wide, twinkling green and white. It roams free like the first &mdash; but enclose it in a claim and it bursts. The region you fence off is always the one the Qix is <em>not</em> in.</p>
+    </div>
+    <div class="hazard">
+      <h3>Sparx</h3>
+      <p>Eight-point starbursts that patrol the border and any line you have settled, never your live trail. Two at level 1; from level 8 a third runs the other way round. Their pace ramps from a move every four frames to every three &mdash; your own speed &mdash; at level 25, and holds there.</p>
+    </div>
+    <div class="hazard">
+      <h3>The fuse</h3>
+      <p>Not a creature, but the thing that kills most players. Stall on a line for 30 frames and it lights. Sparx will not walk your live trail; the fuse is what gets you if you stand on it.</p>
+    </div>
+    <div class="hazard">
+      <h3>The clock</h3>
+      <p>Sixty seconds a level, frozen while you are dead, paused, or reading the level card. At zero the digits flash <code>00</code> in red and you lose a life; the timer resets on respawn.</p>
+    </div>
+  </div>
+</section>
+
+<section id="controls" class="section">
+  <h2><span class="tag">04</span> Controls</h2>
+  <div class="table-wrap">
+  <table class="controls">
+    <thead><tr><th>Input</th><th>Action</th></tr></thead>
+    <tbody>
+      <tr><td>Joystick port 2</td><td>Move along the border and settled lines</td></tr>
+      <tr><td>Fire + direction, off an edge</td><td>Start drawing into open territory</td></tr>
+      <tr><td>Hold fire while drawing</td><td><strong>Slow draw</strong>: half speed, double points, woven fill</td></tr>
+      <tr><td>Release fire while drawing</td><td><strong>Fast draw</strong>: full speed, normal points</td></tr>
+      <tr><td>Fire on the title</td><td>Start a game</td></tr>
+      <tr><td><kbd>P</kbd></td><td>Pause; any key or stick input resumes</td></tr>
+      <tr><td>Keyboard, <kbd>RETURN</kbd></td><td>Type your name on the high-score entry screen</td></tr>
+      <tr><td><kbd>F1</kbd> on the high-score table</td><td>Save the table to disk (file <code>QIXY-HISCORE</code>)</td></tr>
+      <tr><td>Fire on the high-score table</td><td>Back to the title</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="rules" class="section">
+  <h2><span class="tag">05</span> How to play</h2>
+  <div class="rules">
+    <ol>
+      <li><strong>Goal.</strong> Claim the target share of the field &mdash; 70% on level 1, two points more each level up to 90% &mdash; before the sixty-second clock runs out.</li>
+      <li><strong>Draw.</strong> You live on the border. Push off it with fire held and you start a line; bring the line back to the border or to a settled line and everything you fenced off, on the side without the Qix, fills in and scores.</li>
+      <li><strong>Choose your speed.</strong> Keep fire held for a slow, careful line worth double. Let go to sprint back to safety for single points. One release anywhere drops the whole claim to 1&times;.</li>
+      <li><strong>Don't stop.</strong> A stalled line lights the fuse. Keep laying tiles or finish the line.</li>
+      <li><strong>Stay alive.</strong> The Qix kills you if it touches your live trail. Sparx kill you if they reach you on the border or on settled lines. You start with three lives and a second of invulnerability after each respawn.</li>
+      <li><strong>Trap the star.</strong> From level 6 the second Qix can be destroyed by enclosing it inside a claim.</li>
+    </ol>
+    <div class="table-wrap">
+    <table class="controls">
+      <thead><tr><th>Event</th><th>Points</th></tr></thead>
+      <tbody>
+        <tr><td>Each tile claimed, fast draw</td><td class="num">1</td></tr>
+        <tr><td>Each tile claimed, slow draw (fire held for the whole line)</td><td class="num">2</td></tr>
+        <tr><td>Level clear</td><td class="num">(level + % over target) &times; 100</td></tr>
+        <tr><td>Each second left on the clock at level clear</td><td class="num">10</td></tr>
+        <tr><td>Extra life</td><td class="num">every 5,000 points, or one claim &ge; 50%</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="aside">Example: clearing level 5 at 85% against a 75% target pays (5&nbsp;+&nbsp;10)&nbsp;&times;&nbsp;100 = 1,500, on top of the tiles themselves and the time bonus. The score is six digits; the top five runs are kept.</p>
+  </div>
+</section>
+
+<section id="run" class="section">
+  <h2><span class="tag">06</span> Run it</h2>
+  <div class="two-col">
+    <div>
+      <h3>On real hardware</h3>
+      <p>Write <a href="qixy.d64">qixy.d64</a> to a floppy, or put it on an SD2IEC / 1541 Ultimate / Pi1541, then:</p>
+      <pre class="c64"><span class="prompt">LOAD "QIXY",8,1</span>
+SEARCHING FOR QIXY
+LOADING
+READY.
+<span class="prompt">RUN</span></pre>
+      <p>The disk carries the Exomizer-crunched build, about half the size of the raw program, so a real 1541 loads it in a fraction of the time. Joystick in port 2. Works on a C64, a C128 in 64 mode, and an Ultimate 64.</p>
+    </div>
+    <div>
+      <h3>In an emulator</h3>
+      <p>Drag <a href="qixy.prg">qixy.prg</a> or the D64 onto <a href="https://vice-emu.sourceforge.io/">VICE</a> (<code>x64sc</code>), or autostart it from the command line:</p>
+      <pre class="shell">x64sc qixy.prg</pre>
+      <p>Any other C64 emulator that loads PRG or D64 files works too. Map a joystick to port 2.</p>
+    </div>
+  </div>
+
+  <h3>Build from source</h3>
+  <p>One main source file, <code>qixy.asm</code>, in <a href="https://sourceforge.net/projects/acme-crossass/">ACME</a> syntax, plus generated data files for the title and level pictures. <a href="https://bitbucket.org/magli143/exomizer/wiki/Home">Exomizer</a> and <code>c1541</code> (from VICE) are optional: without them you still get a working <code>qixy.prg</code>.</p>
+  <pre class="shell">git clone https://github.com/vattenmelon/qixy.git
+cd qixy
+make            # acme -f cbm -o qixy.prg qixy.asm
+make crunch     # -> qixy_crunched.prg (needs exomizer)
+make disk       # -> qixy.d64, crunched if exomizer is present
+make run        # build and launch in x64sc</pre>
+</section>
+
+<section id="inside" class="section">
+  <h2><span class="tag">07</span> Under the hood</h2>
+  <p class="section-intro">About ten thousand lines of 6510 assembly, running in hires bitmap mode with hardware sprites, that has quietly colonised every corner of the C64's memory map &mdash; including the RAM under the BASIC and KERNAL ROMs and the cassette buffer.</p>
+  <div class="inside-grid">
+    <div class="inside">
+      <h3>Incremental flood fill</h3>
+      <p>Closing a line kicks off a six-phase state machine &mdash; trail conversion, flood, claim, restore, percentage, settle &mdash; that runs a fixed budget of operations per frame (8 flood steps, 32 scan steps on a C64) so a big claim never drops a frame. Play continues while the paint dries; the grace timer covers you meanwhile.</p>
+    </div>
+    <div class="inside">
+      <h3>Ghost and reveal</h3>
+      <p>On a photo level the picture is painted with the display blanked, every interior cell (8 bitmap bytes + colour) is stashed under the KERNAL ROM at <code>$E000</code>, and the visible field is ghosted to dark grey. Claiming a cell copies it back from the stash &mdash; which also heals any trail or fuse scribbles. The stash reads the painted screen, so it works for RLE-compressed images and the run-time-typeset e-mail alike.</p>
+    </div>
+    <div class="inside">
+      <h3>Self-modifying textures</h3>
+      <p>All claim patterns share one page and are drawn by a single self-modifying routine that takes the pattern's low byte in A. The material is rolled once per claim so a whole region shares it; the slow-draw weave gets a darker partner colour from a second table.</p>
+    </div>
+    <div class="inside">
+      <h3>Fixed-point enemies</h3>
+      <p>Qix and Sparx speeds are per-frame increments in 1/64-tile units banked into an accumulator, so a level's pace can be anything between "a tile every six frames" and "a tile a frame" without any frame-skipping jitter. Both ramp through lookup tables from level 1 to 25.</p>
+    </div>
+    <div class="inside">
+      <h3>Sprites</h3>
+      <p>The main Qix is a four-frame multicolor plasma orb, the second a two-frame plasma star generated by a script; both share orange-rim / white-core multicolours. Sparx are hires starbursts drawn with the VIC's 2&times; hardware expansion. Sprite shapes are copied up into VIC bank 1 once per game.</p>
+    </div>
+    <div class="inside">
+      <h3>A raised neon bezel</h3>
+      <p>The playfield frame is a three-tone bevel &mdash; white highlight top and left, light-blue face, blue shadow bottom and right &mdash; from two hires patterns and per-edge colour pairs. Level pictures are packed to the 36&times;19 interior so they can never overwrite it.</p>
+    </div>
+    <div class="inside">
+      <h3>2 MHz on a C128</h3>
+      <p>When the VIC-IIe registers say C128, a raster interrupt chained ahead of the KERNAL's switches the CPU to 2 MHz for the border and vertical blank and back to 1 MHz for the visible picture, since fast mode corrupts the display. The freed third of a frame goes into far higher fill budgets, so claims complete in a few frames.</p>
+    </div>
+    <div class="inside">
+      <h3>Machine detection</h3>
+      <p>PAL or NTSC from the raster-line count; C64 or C128 from whether <code>$D02F</code>/<code>$D030</code> are real registers or open bus; Ultimate hardware from the UCI identification register at <code>$DF1D</code>, followed by a bounded <code>GET_HWINFO</code> handshake that reads the model name to tell an Ultimate 64 from an Ultimate-II+.</p>
+    </div>
+    <div class="inside">
+      <h3>Loading time</h3>
+      <p>The raw program is 50 KB, of which two fifths are zero-filled gaps in the memory map. Exomizer crunches it to about 22 KB, self-decrunching and auto-running, which is what the D64 ships &mdash; roughly 89 disk blocks instead of 196.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <p class="foot-c64">V0.99 &nbsp;&middot;&nbsp; 2026 - VATTENMELON &nbsp;&middot;&nbsp; CODED BY CLAUDE</p>
+  <p>A fan-made recreation for educational and entertainment purposes. <em>Qix</em> is a trademark of Taito Corporation; the original game design is theirs (1981). Source, issues and pull requests at <a href="https://github.com/vattenmelon/qixy">github.com/vattenmelon/qixy</a>.</p>
+</footer>
+
+</body>
+</html>

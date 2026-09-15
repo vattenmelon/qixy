@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" fill="#000"/>
+  <!-- neon playfield bezel -->
+  <rect x="5" y="5" width="54" height="54" fill="none" stroke="#7c70da" stroke-width="4"/>
+  <!-- a claimed corner in the slow-draw weave colour -->
+  <rect x="7" y="7" width="20" height="26" fill="#3e31a2"/>
+  <!-- the pink trail closing it off -->
+  <path d="M27 7 V33 H7" fill="none" stroke="#e08080" stroke-width="3"/>
+  <!-- the Qix: orange rim, white-hot core -->
+  <circle cx="43" cy="40" r="8" fill="#8e5029"/>
+  <circle cx="43" cy="40" r="4" fill="#fff"/>
+  <!-- the player marker -->
+  <polygon points="27,29 31,33 27,37 23,33" fill="#a9ff9f"/>
+</svg>
