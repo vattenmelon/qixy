@@ -2,6 +2,10 @@
 
 **Project page with screenshots and downloads:** https://vattenmelon.github.io/qixy/
 
+[![QIXY gameplay video](https://img.youtube.com/vi/yQxtsGK4rp8/hqdefault.jpg)](https://www.youtube.com/watch?v=yQxtsGK4rp8)
+
+*Gameplay video: https://www.youtube.com/watch?v=yQxtsGK4rp8*
+
 A faithful recreation of the classic arcade game Qix, designed for the Commodore 64 with a modern aesthetic featuring colorful neon graphics and smooth gameplay.
 
 ## Gameplay
